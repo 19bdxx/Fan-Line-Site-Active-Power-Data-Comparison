@@ -1,0 +1,55 @@
+
+================================================================================
+Analysis Report: Fan / Line / Station Power Relationship
+Site: 峡阳B (Xia Yang B)  |  Records: 407,519
+================================================================================
+
+[Power Level Statistics]
+  FAN   | Mean=213.46 MW  Std=233.83 MW  Range=[0.00, 893.45]
+  LINE  | Mean=202.96 MW  Std=227.26 MW  Range=[0.00, 858.76]
+  STATION | Mean=122.73 MW  Std=216.71 MW  Range=[-11.90, 852.67]
+
+[Difference Statistics]
+  Fan - Line    | Mean=10.503  Median=8.467  Std=8.936
+  Line - Station| Mean=80.231  Median=5.640  Std=153.552
+  Fan - Station | Mean=90.734  Median=17.612  Std=156.175
+
+[Key Observations]
+  1. Fan > Line > Station hierarchy:
+     - Fan power is generally higher than line measurement power (mean diff = 10.50 MW),
+       suggesting turbine-level metering captures slightly more power than line instruments.
+     - Line power exceeds station power on average (mean diff = 80.23 MW),
+       consistent with auxiliary power consumption and line losses before the station meter.
+
+  2. Station=0 anomaly:
+     - 170,107 records (41.74%) have STATION=0
+       while Fan power > 1 MW. This strongly indicates a data quality issue —
+       the station active power measurement is missing or zeroed out while turbines
+       were actually generating power.
+
+  3. Large discrepancy (|Fan - Station| > 10 MW): 69.8% of all records.
+     When present at low production levels, this often reflects auxiliary consumption.
+     At high production levels, it may indicate metering instrument errors.
+
+  4. Strategy impact (S1 vs S2):
+     - The difference between sum-with-negatives (S1) and clip-at-zero (S2) is small
+       for fan power but more notable for line power (negative readings from line
+       instruments can occur during low-wind or reverse-flow conditions).
+
+[Possible Causes of Power Differences]
+  Fan - Line:
+    - Measurement position: Fan meters are at nacelle; line meters are at substation busbar.
+    - Cable and transformer losses from turbine to collection line.
+    - Timing offsets between fan SCADA and line SCADA.
+
+  Line - Station:
+    - Auxiliary (station service) power consumption (lighting, cooling, controls).
+    - Line losses in the collection system before the station meter.
+    - Differences in measurement locations (high/low voltage side of main transformer).
+
+  Station power = 0 anomalies:
+    - Likely SCADA data recording gaps or instrument failure.
+    - Could also occur during grid-disconnected tests or forced outages where
+      station meter resets while turbines briefly spin.
+
+================================================================================
