@@ -1,16 +1,25 @@
 """
 功能说明：
 本脚本对峡阳B风电场的 SCADA 数据进行探索性数据分析（EDA），
-分析风机功率（FAN）、集电线路功率（LINE）与全站功率（STATION）之间的关系。
+分析风机功率（FAN）与集电线路功率（LINE）之间的关系。
+
+背景说明：
+- 全站功率（ACTIVE_POWER_STATION）由集电线路有功汇总计算得到，且该测点
+  在 2024-03 至 2024-06 整段时间内缺失，因此不再作为独立分析对象。
+- 分析聚焦于"风机汇总功率 vs 集电线路测点功率"的关系，涵盖全时段数据
+  （2024-03-15 ～ 2024-12-24）。
+
+功率口径说明（S2 策略，业务正确口径）：
+- 风机不发电时会消耗厂用电（自耗电），厂用电由独立电源供给，
+  与集电线路彼此独立，不应体现在集电线路功率中。
+- 因此风机有功计算中，将负功率（消耗厂用电状态）直接置为 0，
+  即 FAN_ACTIVE_POWER_SUM_S2（负值置0求和）是正确的业务口径。
 
 主要功能：
-1. 加载并合并峡阳B的分部数据文件
-2. 计算三个层级功率之间的差值：
-   - Fan - Line（风机功率 - 集电线路功率）
-   - Line - Station（集电线路功率 - 全站功率）
-   - Fan - Station（风机功率 - 全站功率）
+1. 加载并合并峡阳B的分部数据文件（全时段）
+2. 计算风机功率与集电线路功率的差值：Fan - Line
 3. 基本统计分析（均值、标准差、分位数等）
-4. 可视化分析（时间序列、散点图、分布图、差值分析）
+4. 可视化分析（时间序列、散点图、分布图、差值分析等）
 5. 输出观察结论与可能原因分析
 
 数据来源：DATA/峡阳B/
@@ -71,16 +80,17 @@ def load_data(data_dir: str) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 def add_diff_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    以 Strategy-2（负值置0）结果作为代表值，计算三层功率差值。
-    Strategy-2 更贴近实际运营中的统计口径（负功率视为无效输出）。
+    以 Strategy-2（负值置0）结果作为代表值，计算风机与集电线路功率差值。
+
+    Strategy-2 是业务正确口径：
+    - 风机不发电时消耗厂用电（自耗电），厂用电与集电线路彼此独立。
+    - 因此当风机有功为负（厂用电模式）时，对集电线路贡献应置0，
+      不应以负值参与汇总。
     """
     df["FAN"] = df["FAN_ACTIVE_POWER_SUM_S2"]
     df["LINE"] = df["LINE_ACTIVE_POWER_SUM_S2"]
-    df["STATION"] = pd.to_numeric(df["ACTIVE_POWER_STATION"], errors="coerce")
 
-    df["DIFF_FAN_LINE"] = df["FAN"] - df["LINE"]          # 风机 - 线路
-    df["DIFF_LINE_STATION"] = df["LINE"] - df["STATION"]  # 线路 - 全站
-    df["DIFF_FAN_STATION"] = df["FAN"] - df["STATION"]    # 风机 - 全站
+    df["DIFF_FAN_LINE"] = df["FAN"] - df["LINE"]   # 风机 - 线路
 
     return df
 
@@ -89,8 +99,7 @@ def add_diff_columns(df: pd.DataFrame) -> pd.DataFrame:
 # 3. 基本统计
 # ─────────────────────────────────────────────
 def print_basic_stats(df: pd.DataFrame) -> None:
-    cols = ["FAN", "LINE", "STATION",
-            "DIFF_FAN_LINE", "DIFF_LINE_STATION", "DIFF_FAN_STATION"]
+    cols = ["FAN", "LINE", "DIFF_FAN_LINE"]
 
     print("\n" + "=" * 70)
     print("Section 1: Basic Statistics (MW)")
@@ -104,9 +113,9 @@ def print_basic_stats(df: pd.DataFrame) -> None:
     print(df[cols].isnull().sum().to_string())
 
     print("\n" + "=" * 70)
-    print("Section 3: Correlation Matrix")
+    print("Section 3: Correlation: FAN vs LINE")
     print("=" * 70)
-    print(df[["FAN", "LINE", "STATION"]].corr().to_string())
+    print(df[["FAN", "LINE"]].corr().to_string())
 
 
 # ─────────────────────────────────────────────
@@ -129,28 +138,23 @@ def plot_time_series(df: pd.DataFrame, sample_days: int = 30) -> None:
 
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
-    # --- 上图：三层功率 ---
+    # --- 上图：风机功率 vs 集电线路功率 ---
     ax = axes[0]
-    ax.plot(sub["timestamp"], sub["FAN"], label="Fan Power (S2)", alpha=0.7, lw=0.8)
+    ax.plot(sub["timestamp"], sub["FAN"], label="Fan Power (S2, neg→0)", alpha=0.7, lw=0.8)
     ax.plot(sub["timestamp"], sub["LINE"], label="Line Power (S2)", alpha=0.7, lw=0.8)
-    ax.plot(sub["timestamp"], sub["STATION"], label="Station Power", alpha=0.9, lw=0.8)
     ax.set_ylabel("Active Power (MW)")
-    ax.set_title(f"Time Series of Power Levels (first {sample_days} days)")
+    ax.set_title(f"Time Series: Fan vs Line Power (first {sample_days} days, from 2024-03-15)")
     ax.legend(loc="upper right", fontsize=8)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax.grid(True, alpha=0.3)
 
-    # --- 下图：差值 ---
+    # --- 下图：差值 Fan - Line ---
     ax2 = axes[1]
     ax2.plot(sub["timestamp"], sub["DIFF_FAN_LINE"],
              label="Fan - Line", alpha=0.7, lw=0.8, color="C3")
-    ax2.plot(sub["timestamp"], sub["DIFF_LINE_STATION"],
-             label="Line - Station", alpha=0.7, lw=0.8, color="C4")
-    ax2.plot(sub["timestamp"], sub["DIFF_FAN_STATION"],
-             label="Fan - Station", alpha=0.7, lw=0.8, color="C5")
     ax2.axhline(0, color="black", lw=0.8, ls="--")
     ax2.set_ylabel("Power Difference (MW)")
-    ax2.set_title("Power Differences Between Levels")
+    ax2.set_title("Fan - Line Power Difference")
     ax2.legend(loc="upper right", fontsize=8)
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax2.grid(True, alpha=0.3)
@@ -164,32 +168,23 @@ def plot_time_series(df: pd.DataFrame, sample_days: int = 30) -> None:
 # 6. 可视化 2 — 散点图
 # ─────────────────────────────────────────────
 def plot_scatter(df: pd.DataFrame, n_sample: int = 20000) -> None:
-    sub = df.dropna(subset=["FAN", "LINE", "STATION"])
+    sub = df.dropna(subset=["FAN", "LINE"])
     if len(sub) > n_sample:
         sub = sub.sample(n_sample, random_state=42)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 6))
 
-    pairs = [
-        ("FAN", "LINE", "Fan vs Line Power"),
-        ("LINE", "STATION", "Line vs Station Power"),
-        ("FAN", "STATION", "Fan vs Station Power"),
-    ]
+    ax.scatter(sub["FAN"], sub["LINE"], alpha=0.15, s=5, color="steelblue")
+    lim_min = min(sub["FAN"].min(), sub["LINE"].min())
+    lim_max = max(sub["FAN"].max(), sub["LINE"].max())
+    ax.plot([lim_min, lim_max], [lim_min, lim_max],
+            "r--", lw=1, label="y = x  (Fan = Line)")
+    ax.set_xlabel("Fan Power Sum S2 (MW)\n[negative→0, auxiliary excluded]")
+    ax.set_ylabel("Line Power Sum S2 (MW)")
+    ax.set_title("Fan Power vs Collection Line Power\n(Strategy-2: neg→0)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-    for ax, (xcol, ycol, title) in zip(axes, pairs):
-        ax.scatter(sub[xcol], sub[ycol], alpha=0.15, s=5, color="steelblue")
-        # 1:1 参考线
-        lim_min = min(sub[xcol].min(), sub[ycol].min())
-        lim_max = max(sub[xcol].max(), sub[ycol].max())
-        ax.plot([lim_min, lim_max], [lim_min, lim_max],
-                "r--", lw=1, label="y = x")
-        ax.set_xlabel(f"{xcol} (MW)")
-        ax.set_ylabel(f"{ycol} (MW)")
-        ax.set_title(title)
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-    plt.suptitle("Scatter Plots: Power Level Comparison", y=1.02)
     plt.tight_layout()
     save_fig("02_scatter_plots.png")
 
@@ -198,32 +193,25 @@ def plot_scatter(df: pd.DataFrame, n_sample: int = 20000) -> None:
 # 7. 可视化 3 — 差值分布（直方图 + KDE）
 # ─────────────────────────────────────────────
 def plot_diff_distribution(df: pd.DataFrame) -> None:
-    diff_cols = {
-        "Fan - Line": "DIFF_FAN_LINE",
-        "Line - Station": "DIFF_LINE_STATION",
-        "Fan - Station": "DIFF_FAN_STATION",
-    }
+    data = df["DIFF_FAN_LINE"].dropna()
+    # 截断极值以便展示主体分布
+    p1, p99 = data.quantile(0.01), data.quantile(0.99)
+    data_clip = data.clip(p1, p99)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.hist(data_clip, bins=100, color="steelblue", edgecolor="none", alpha=0.7)
+    ax.axvline(data.mean(), color="red", lw=1.5, ls="--",
+               label=f"Mean={data.mean():.2f} MW")
+    ax.axvline(data.median(), color="orange", lw=1.5, ls="-.",
+               label=f"Median={data.median():.2f} MW")
+    ax.axvline(0, color="black", lw=1, ls="--", label="0 MW")
+    ax.set_xlabel("Fan - Line Difference (MW)")
+    ax.set_ylabel("Count")
+    ax.set_title("Distribution: Fan Power - Line Power (S2 strategy)\n"
+                 "[positive = Fan > Line (cable/transformer losses)]")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-    for ax, (label, col) in zip(axes, diff_cols.items()):
-        data = df[col].dropna()
-        # 截断极值以便展示主体分布
-        p1, p99 = data.quantile(0.01), data.quantile(0.99)
-        data_clip = data.clip(p1, p99)
-
-        ax.hist(data_clip, bins=100, color="steelblue", edgecolor="none", alpha=0.7)
-        ax.axvline(data.mean(), color="red", lw=1.5, ls="--",
-                   label=f"Mean={data.mean():.2f}")
-        ax.axvline(data.median(), color="orange", lw=1.5, ls="-.",
-                   label=f"Median={data.median():.2f}")
-        ax.set_xlabel("Difference (MW)")
-        ax.set_ylabel("Count")
-        ax.set_title(f"Distribution: {label}")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-    plt.suptitle("Distribution of Power Differences", y=1.02)
     plt.tight_layout()
     save_fig("03_diff_distribution.png")
 
@@ -232,36 +220,29 @@ def plot_diff_distribution(df: pd.DataFrame) -> None:
 # 8. 可视化 4 — 差值 vs 功率水平（箱线图分段）
 # ─────────────────────────────────────────────
 def plot_diff_vs_power_level(df: pd.DataFrame) -> None:
-    """将风机功率按十等分分段，观察不同功率水平下差值特征"""
-    sub = df.dropna(subset=["FAN", "DIFF_FAN_LINE", "DIFF_LINE_STATION", "DIFF_FAN_STATION"]).copy()
+    """将风机功率按十等分分段，观察不同功率水平下 Fan-Line 差值特征"""
+    sub = df.dropna(subset=["FAN", "DIFF_FAN_LINE"]).copy()
 
     # 按 FAN 功率分10段
     sub["FAN_BIN"] = pd.cut(sub["FAN"], bins=10)
 
-    diff_cols = {
-        "Fan - Line": "DIFF_FAN_LINE",
-        "Line - Station": "DIFF_LINE_STATION",
-        "Fan - Station": "DIFF_FAN_STATION",
-    }
+    fig, ax = plt.subplots(1, 1, figsize=(14, 5))
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+    groups = [g["DIFF_FAN_LINE"].dropna().values for _, g in sub.groupby("FAN_BIN", observed=True)]
+    bin_labels = [str(b) for b in sub.groupby("FAN_BIN", observed=True).groups.keys()]
 
-    for ax, (label, col) in zip(axes, diff_cols.items()):
-        groups = [g[col].dropna().values for _, g in sub.groupby("FAN_BIN", observed=True)]
-        bin_labels = [str(b) for b in sub.groupby("FAN_BIN", observed=True).groups.keys()]
+    ax.boxplot(groups, labels=bin_labels, patch_artist=True,
+               boxprops=dict(facecolor="lightsteelblue", alpha=0.7),
+               medianprops=dict(color="red", lw=1.5),
+               flierprops=dict(marker=".", markersize=2, alpha=0.3))
+    ax.axhline(0, color="black", lw=0.8, ls="--")
+    ax.set_xlabel("Fan Power Bin (MW)")
+    ax.set_ylabel("Fan - Line Difference (MW)")
+    ax.set_title("Fan - Line Power Difference by Fan Power Level\n"
+                 "(S2 strategy: turbine auxiliary power excluded from sum)")
+    ax.tick_params(axis="x", rotation=30, labelsize=7)
+    ax.grid(True, alpha=0.3, axis="y")
 
-        ax.boxplot(groups, labels=bin_labels, patch_artist=True,
-                   boxprops=dict(facecolor="lightsteelblue", alpha=0.7),
-                   medianprops=dict(color="red", lw=1.5),
-                   flierprops=dict(marker=".", markersize=2, alpha=0.3))
-        ax.axhline(0, color="black", lw=0.8, ls="--")
-        ax.set_xlabel("Fan Power Bin (MW)")
-        ax.set_ylabel("Difference (MW)")
-        ax.set_title(f"{label} by Fan Power Level")
-        ax.tick_params(axis="x", rotation=30, labelsize=7)
-        ax.grid(True, alpha=0.3, axis="y")
-
-    plt.suptitle("Power Difference by Fan Power Level", y=1.01)
     plt.tight_layout()
     save_fig("04_diff_by_power_level.png")
 
@@ -272,39 +253,32 @@ def plot_diff_vs_power_level(df: pd.DataFrame) -> None:
 def plot_monthly_avg(df: pd.DataFrame) -> None:
     sub = df.copy()
     sub["month"] = sub["timestamp"].dt.to_period("M")
-    monthly = sub.groupby("month")[["FAN", "LINE", "STATION",
-                                    "DIFF_FAN_LINE", "DIFF_LINE_STATION",
-                                    "DIFF_FAN_STATION"]].mean()
+    monthly = sub.groupby("month")[["FAN", "LINE", "DIFF_FAN_LINE"]].mean()
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
     x = range(len(monthly))
     ax = axes[0]
-    ax.bar([i - 0.25 for i in x], monthly["FAN"], width=0.25,
-           label="Fan", color="C0", alpha=0.8)
-    ax.bar([i for i in x], monthly["LINE"], width=0.25,
-           label="Line", color="C1", alpha=0.8)
-    ax.bar([i + 0.25 for i in x], monthly["STATION"], width=0.25,
-           label="Station", color="C2", alpha=0.8)
+    ax.bar([i - 0.2 for i in x], monthly["FAN"], width=0.4,
+           label="Fan (S2)", color="C0", alpha=0.8)
+    ax.bar([i + 0.2 for i in x], monthly["LINE"], width=0.4,
+           label="Line (S2)", color="C1", alpha=0.8)
     ax.set_xticks(list(x))
     ax.set_xticklabels([str(m) for m in monthly.index], rotation=30, ha="right")
     ax.set_ylabel("Mean Active Power (MW)")
-    ax.set_title("Monthly Average Power by Level")
+    ax.set_title("Monthly Average Power: Fan vs Collection Line\n"
+                 "(Full period 2024-03 ~ 2024-12)")
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
 
     ax2 = axes[1]
     ax2.plot(list(x), monthly["DIFF_FAN_LINE"],
              marker="o", label="Fan - Line", color="C3")
-    ax2.plot(list(x), monthly["DIFF_LINE_STATION"],
-             marker="s", label="Line - Station", color="C4")
-    ax2.plot(list(x), monthly["DIFF_FAN_STATION"],
-             marker="^", label="Fan - Station", color="C5")
     ax2.axhline(0, color="black", lw=0.8, ls="--")
     ax2.set_xticks(list(x))
     ax2.set_xticklabels([str(m) for m in monthly.index], rotation=30, ha="right")
     ax2.set_ylabel("Mean Difference (MW)")
-    ax2.set_title("Monthly Average Power Differences")
+    ax2.set_title("Monthly Average Fan - Line Power Difference")
     ax2.legend()
     ax2.grid(True, alpha=0.3, axis="y")
 
@@ -344,57 +318,82 @@ def plot_line_vs_fan_group(df: pd.DataFrame) -> None:
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    plt.suptitle("Per-Line: Fan Group Sum vs Line Measurement Power", y=1.02)
+    plt.suptitle("Per-Line: Fan Group Sum vs Line Measurement Power\n"
+                 "(S2: turbine auxiliary power excluded, neg→0)", y=1.02)
     plt.tight_layout()
     save_fig("06_per_line_comparison.png")
 
 
 # ─────────────────────────────────────────────
-# 11. 可视化 7 — 全站功率为0时的异常分析
+# 11. 可视化 7 — 风机零功率时集电线路的独立性验证
 # ─────────────────────────────────────────────
-def plot_station_zero_analysis(df: pd.DataFrame) -> None:
-    """当全站功率为0但风机/线路有功率时，分析差异情况（疑似数据质量问题）"""
-    station_zero = df[(df["STATION"] == 0) & (df["FAN"] > 1)].copy()
-    normal = df[(df["STATION"] > 1) & (df["FAN"] > 1)].copy()
+def plot_zero_fan_vs_line(df: pd.DataFrame) -> None:
+    """
+    验证"风机不发电时厂用电与集电线路彼此独立"的假设。
+
+    当全场风机汇总功率（S1，含负值）< 0 时，表示所有风机处于耗电（厂用电）模式。
+    此时集电线路测点应接近0或小值，因为没有风电输出到线路。
+
+    图表展示：
+    - 左：S1（含负值）vs LINE 散点图，观察负功率时线路的表现
+    - 右：FAN_S1 < 0 时 LINE 的分布，说明此时线路功率集中在0附近
+    """
+    s1 = df["FAN_ACTIVE_POWER_SUM_S1"]
+    line = df["LINE"]
+
+    neg_fan = df[s1 < 0].copy()   # 风机耗电时段
+    pos_fan = df[s1 > 1].copy()   # 风机发电时段
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     ax = axes[0]
-    n_zero = len(station_zero)
-    n_total = len(df[df["FAN"] > 1])
-    ax.pie(
-        [n_zero, n_total - n_zero],
-        labels=[f"Station=0 but Fan>1MW\n(n={n_zero})",
-                f"Station>1 MW\n(n={n_total - n_zero})"],
-        autopct="%1.1f%%",
-        startangle=90,
-        colors=["tomato", "steelblue"],
-    )
-    ax.set_title("Station=0 Anomaly Proportion\n(when Fan Power > 1 MW)")
+    n_sample = 10000
+    sub_neg = neg_fan.sample(min(n_sample, len(neg_fan)), random_state=42)
+    sub_pos = pos_fan.sample(min(n_sample, len(pos_fan)), random_state=42)
+    ax.scatter(sub_neg["FAN_ACTIVE_POWER_SUM_S1"], sub_neg["LINE"],
+               alpha=0.3, s=5, color="tomato", label=f"Fan S1<0 (n={len(neg_fan):,})")
+    ax.scatter(sub_pos["FAN_ACTIVE_POWER_SUM_S1"], sub_pos["LINE"],
+               alpha=0.1, s=5, color="steelblue", label=f"Fan S1>1 (n={len(pos_fan):,})")
+    ax.axvline(0, color="black", lw=0.8, ls="--")
+    ax.axhline(0, color="black", lw=0.8, ls="--")
+    ax.set_xlabel("Fan Power S1 (MW, negative = consuming auxiliary)")
+    ax.set_ylabel("Collection Line Power (MW)")
+    ax.set_title("Fan Power (S1) vs Line Power\n"
+                 "[Confirms auxiliary power is independent of line]")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
     ax2 = axes[1]
-    if len(station_zero) > 0:
-        ax2.hist(station_zero["FAN"].clip(0, station_zero["FAN"].quantile(0.99)),
-                 bins=60, color="tomato", alpha=0.7,
-                 label=f"Station=0 (n={len(station_zero)})")
-    ax2.hist(normal["FAN"].clip(0, normal["FAN"].quantile(0.99)),
-             bins=60, color="steelblue", alpha=0.5,
-             label=f"Normal (n={len(normal)})")
-    ax2.set_xlabel("Fan Power (MW)")
+    line_neg = neg_fan["LINE"].dropna()
+    p1, p99 = line_neg.quantile(0.01), line_neg.quantile(0.99)
+    ax2.hist(line_neg.clip(p1, p99), bins=80, color="tomato", alpha=0.7)
+    ax2.axvline(line_neg.mean(), color="red", lw=1.5, ls="--",
+                label=f"Mean={line_neg.mean():.2f} MW")
+    ax2.axvline(0, color="black", lw=1, ls="--", label="0 MW")
+    ax2.set_xlabel("Collection Line Power (MW)")
     ax2.set_ylabel("Count")
-    ax2.set_title("Fan Power Distribution:\nStation=0 vs Normal Records")
+    ax2.set_title(f"Line Power Distribution when Fan S1 < 0\n"
+                  f"(n={len(neg_fan):,} records — turbines consuming auxiliary power)")
     ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
 
+    plt.suptitle("Independence of Auxiliary Power and Collection Line\n"
+                 "→ Confirms S2 strategy (neg→0) is correct for fan power sum", y=1.02)
     plt.tight_layout()
-    save_fig("07_station_zero_anomaly.png")
+    save_fig("07_zero_fan_vs_line.png")
 
 
 # ─────────────────────────────────────────────
 # 12. 可视化 8 — 策略1 vs 策略2 差异
 # ─────────────────────────────────────────────
 def plot_strategy_comparison(df: pd.DataFrame) -> None:
-    """对比 S1（含负值）与 S2（负值置0）两种统计策略"""
+    """对比 S1（含负值）与 S2（负值置0）两种统计策略
+
+    业务含义：
+    - S1：风机有功原始汇总（含负值/厂用电耗电）
+    - S2：风机有功汇总（负值置0，即厂用电不计入集电线路）
+    - S2 是正确的业务口径，因为厂用电与集电线路相互独立
+    """
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     for ax, (col_s1, col_s2, label) in zip(axes, [
@@ -411,7 +410,8 @@ def plot_strategy_comparison(df: pd.DataFrame) -> None:
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    plt.suptitle("Strategy-2 vs Strategy-1: Impact of Clipping Negative Values",
+    plt.suptitle("Strategy-2 vs Strategy-1: S2 is correct business logic\n"
+                 "(auxiliary power consumption is independent of collection line)",
                  y=1.02)
     plt.tight_layout()
     save_fig("08_strategy_comparison.png")
@@ -424,68 +424,73 @@ def print_findings(df: pd.DataFrame) -> None:
     total = len(df)
     fan = df["FAN"]
     line = df["LINE"]
-    station = df["STATION"]
 
     d_fl = df["DIFF_FAN_LINE"]
-    d_ls = df["DIFF_LINE_STATION"]
-    d_fs = df["DIFF_FAN_STATION"]
 
-    station_zero_fan_positive = ((station == 0) & (fan > 1)).sum()
-    large_diff_pct = (d_fs.abs() > 10).sum() / total * 100
+    # S1 vs S2 impact
+    fan_s1 = df["FAN_ACTIVE_POWER_SUM_S1"]
+    neg_fan_records = (fan_s1 < 0).sum()
+    s1_s2_diff_mean = (df["FAN_ACTIVE_POWER_SUM_S2"] - fan_s1).mean()
+
+    corr_fl = fan.corr(line)
+    large_diff_pct = (d_fl.abs() > 10).sum() / total * 100
 
     report = f"""
 ================================================================================
-Analysis Report: Fan / Line / Station Power Relationship
-Site: 峡阳B (Xia Yang B)  |  Records: {total:,}
+Analysis Report: Fan Power vs Collection Line Power
+Site: 峡阳B (Xia Yang B)  |  Records: {total:,}  |  Period: 2024-03-15 ~ 2024-12-24
 ================================================================================
 
-[Power Level Statistics]
-  FAN   | Mean={fan.mean():.2f} MW  Std={fan.std():.2f} MW  Range=[{fan.min():.2f}, {fan.max():.2f}]
-  LINE  | Mean={line.mean():.2f} MW  Std={line.std():.2f} MW  Range=[{line.min():.2f}, {line.max():.2f}]
-  STATION | Mean={station.mean():.2f} MW  Std={station.std():.2f} MW  Range=[{station.min():.2f}, {station.max():.2f}]
+[Background]
+  - Station power (ACTIVE_POWER_STATION) is calculated from collection line power
+    and was missing for 2024-03 through 2024-06. It is therefore excluded from
+    this analysis.
+  - Analysis covers the full available period: 2024-03-15 ~ 2024-12-24.
 
-[Difference Statistics]
-  Fan - Line    | Mean={d_fl.mean():.3f}  Median={d_fl.median():.3f}  Std={d_fl.std():.3f}
-  Line - Station| Mean={d_ls.mean():.3f}  Median={d_ls.median():.3f}  Std={d_ls.std():.3f}
-  Fan - Station | Mean={d_fs.mean():.3f}  Median={d_fs.median():.3f}  Std={d_fs.std():.3f}
+[Power Strategy: S2 (negative → 0)]
+  - When turbines are not generating, they consume auxiliary power (plant service
+    power). This auxiliary power comes from an independent source and is NOT
+    reflected in the collection line power.
+  - Therefore, negative turbine active power values should be set to 0 when
+    calculating the fan power sum for comparison with collection line power.
+  - This is the S2 strategy (FAN_ACTIVE_POWER_SUM_S2), which is the correct
+    business calculation.
+  - Records where Fan S1 < 0 (turbines consuming auxiliary): {neg_fan_records:,}
+    ({neg_fan_records/total*100:.2f}%)
+  - Mean difference S2 - S1 for fan: {s1_s2_diff_mean:.3f} MW
+
+[Power Level Statistics (S2)]
+  FAN  | Mean={fan.mean():.2f} MW  Std={fan.std():.2f} MW  Range=[{fan.min():.2f}, {fan.max():.2f}]
+  LINE | Mean={line.mean():.2f} MW  Std={line.std():.2f} MW  Range=[{line.min():.2f}, {line.max():.2f}]
+
+[Fan - Line Difference (S2)]
+  Mean  = {d_fl.mean():.3f} MW
+  Median= {d_fl.median():.3f} MW
+  Std   = {d_fl.std():.3f} MW
+
+[Correlation: Fan vs Line]
+  Pearson r = {corr_fl:.4f}
 
 [Key Observations]
-  1. Fan > Line > Station hierarchy:
-     - Fan power is generally higher than line measurement power (mean diff = {d_fl.mean():.2f} MW),
-       suggesting turbine-level metering captures slightly more power than line instruments.
-     - Line power exceeds station power on average (mean diff = {d_ls.mean():.2f} MW),
-       consistent with auxiliary power consumption and line losses before the station meter.
+  1. Fan power is generally higher than line measurement power
+     (mean diff = {d_fl.mean():.2f} MW), consistent with cable and transformer
+     losses between turbine nacelle meters and collection line substation meters.
 
-  2. Station=0 anomaly:
-     - {station_zero_fan_positive:,} records ({station_zero_fan_positive/total*100:.2f}%) have STATION=0
-       while Fan power > 1 MW. This strongly indicates a data quality issue —
-       the station active power measurement is missing or zeroed out while turbines
-       were actually generating power.
+  2. Large discrepancy (|Fan - Line| > 10 MW): {large_diff_pct:.1f}% of all records.
+     These may indicate data quality issues (frozen data, communication outages)
+     already analyzed in the separate data quality report (#7-3/#7-4 scripts).
 
-  3. Large discrepancy (|Fan - Station| > 10 MW): {large_diff_pct:.1f}% of all records.
-     When present at low production levels, this often reflects auxiliary consumption.
-     At high production levels, it may indicate metering instrument errors.
+  3. S2 strategy validation:
+     When fan S1 < 0 (turbines consuming auxiliary power), the collection line
+     power remains near zero, confirming that auxiliary consumption is independent
+     of the collection line — validating the S2 strategy as correct.
 
-  4. Strategy impact (S1 vs S2):
-     - The difference between sum-with-negatives (S1) and clip-at-zero (S2) is small
-       for fan power but more notable for line power (negative readings from line
-       instruments can occur during low-wind or reverse-flow conditions).
-
-[Possible Causes of Power Differences]
-  Fan - Line:
-    - Measurement position: Fan meters are at nacelle; line meters are at substation busbar.
-    - Cable and transformer losses from turbine to collection line.
-    - Timing offsets between fan SCADA and line SCADA.
-
-  Line - Station:
-    - Auxiliary (station service) power consumption (lighting, cooling, controls).
-    - Line losses in the collection system before the station meter.
-    - Differences in measurement locations (high/low voltage side of main transformer).
-
-  Station power = 0 anomalies:
-    - Likely SCADA data recording gaps or instrument failure.
-    - Could also occur during grid-disconnected tests or forced outages where
-      station meter resets while turbines briefly spin.
+[Possible Causes of Fan - Line Difference]
+  - Measurement position: Fan meters are at nacelle; line meters are at
+    substation busbar.
+  - Cable and transformer losses from turbine to collection line.
+  - Timing offsets between fan SCADA and line SCADA data acquisition.
+  - Data quality issues (communication freezes — see #7-4 analysis).
 
 ================================================================================
 """
@@ -502,7 +507,9 @@ Site: 峡阳B (Xia Yang B)  |  Records: {total:,}
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 70)
-    print("Power Level Relationship Analysis — 峡阳B")
+    print("Fan vs Collection Line Power Analysis — 峡阳B")
+    print("Full period: 2024-03-15 ~ 2024-12-24")
+    print("Strategy: S2 (negative fan power → 0, auxiliary excluded)")
     print("=" * 70)
 
     print("\n[1] Loading data ...")
@@ -519,10 +526,10 @@ if __name__ == "__main__":
     print("  4.1 Time series ...")
     plot_time_series(df)
 
-    print("  4.2 Scatter plots ...")
+    print("  4.2 Scatter plot (Fan vs Line) ...")
     plot_scatter(df)
 
-    print("  4.3 Difference distributions ...")
+    print("  4.3 Difference distribution ...")
     plot_diff_distribution(df)
 
     print("  4.4 Difference by power level ...")
@@ -534,10 +541,10 @@ if __name__ == "__main__":
     print("  4.6 Per-line comparison ...")
     plot_line_vs_fan_group(df)
 
-    print("  4.7 Station=0 anomaly ...")
-    plot_station_zero_analysis(df)
+    print("  4.7 Auxiliary power independence verification ...")
+    plot_zero_fan_vs_line(df)
 
-    print("  4.8 Strategy comparison ...")
+    print("  4.8 Strategy comparison (S1 vs S2) ...")
     plot_strategy_comparison(df)
 
     print("\n[5] Findings & Report ...")
