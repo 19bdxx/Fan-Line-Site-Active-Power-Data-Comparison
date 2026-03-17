@@ -10,6 +10,23 @@ Site: 峡阳B (Xia Yang B)  |  Records: 407,519  |  Period: 2024-03-15 ~ 2024-12
     this analysis.
   - Analysis covers the full available period: 2024-03-15 ~ 2024-12-24.
 
+[Turbine Manufacturer Composition (Confirmed by Wind Farm Manager)]
+  WU  (63-109):  47 Mingyang MySE6.45-180 (all),    total 303.15 MW
+  BING(153-199): 15 Mingyang MySE6.45-180 +
+                  1 Mingyang MySE5.5-155  +
+                 31 Goldwind GW171/6450,             total 302.20 MW
+  DING(110-152): 43 Dongqi  DEW-D7000-184 (all),    total 301.00 MW
+
+  KEY FINDING: Mingyang turbines (MySE6.45-180, MySE5.5-155) include the turbine's
+  OWN internal power consumption (drives, cooling, hydraulics, etc.) in their SCADA
+  active power reading. Dongqi and Goldwind turbines do NOT — they report only the
+  net power delivered to the collection line.
+
+  This is the root cause of the WU > BING > DING "transmission loss" pattern:
+    WU  (100% Mingyang) → highest apparent loss
+    BING (~34% Mingyang) → intermediate loss
+    DING (0%  Mingyang) → lowest loss ← best proxy for true cable/transformer losses
+
 [Power Strategy: S2 (negative → 0)]
   - When turbines are not generating, they consume auxiliary power (plant service
     power). This auxiliary power comes from an independent source and is NOT
@@ -34,10 +51,22 @@ Site: 峡阳B (Xia Yang B)  |  Records: 407,519  |  Period: 2024-03-15 ~ 2024-12
 [Correlation: Fan vs Line]
   Pearson r = 0.9997
 
+[Per-Line Loss Analysis (Generating Mode: Fan_S2>0 AND Line>0)]
+    BING   (16/47 Mingyang) | Generating records: 327,664 | Mean loss: 3.29 MW
+    DING   (0/43 Mingyang) | Generating records: 316,350 | Mean loss: 2.39 MW
+    WU     (47/47 Mingyang) | Generating records: 335,244 | Mean loss: 6.72 MW
+
+  Interpretation:
+  - DING loss (~2.4 MW, no Mingyang) ≈ true cable + transformer transmission loss
+  - BING excess vs DING ≈ 0.89 MW → 16 Mingyang turbine self-consumption
+  - WU  excess vs DING ≈ 4.33 MW → 47 Mingyang turbine self-consumption
+
 [Key Observations]
   1. Fan power is generally higher than line measurement power
-     (mean diff = 10.50 MW), consistent with cable and transformer
-     losses between turbine nacelle meters and collection line substation meters.
+     (mean diff = 10.50 MW). The difference comes from two sources:
+     a) Cable and transformer losses (estimated ~2.4% from DING line as baseline)
+     b) Mingyang turbine internal self-consumption included in SCADA active power
+        (applies to WU and partially BING, not DING)
 
   2. Large discrepancy (|Fan - Line| > 10 MW): 37.8% of all records.
      These may indicate data quality issues (frozen data, communication outages)
@@ -49,9 +78,13 @@ Site: 峡阳B (Xia Yang B)  |  Records: 407,519  |  Period: 2024-03-15 ~ 2024-12
      of the collection line — validating the S2 strategy as correct.
 
 [Possible Causes of Fan - Line Difference]
-  - Measurement position: Fan meters are at nacelle; line meters are at
-    substation busbar.
-  - Cable and transformer losses from turbine to collection line.
+  Primary cause (newly confirmed):
+  - Mingyang turbine SCADA active power includes internal self-consumption.
+    WU (100% Mingyang) has the highest bias; BING (~34% Mingyang) is intermediate;
+    DING (0% Mingyang) shows only true transmission losses.
+
+  Secondary causes (physical):
+  - Cable and transformer losses from turbine to collection line substation.
   - Timing offsets between fan SCADA and line SCADA data acquisition.
   - Data quality issues (communication freezes — see #7-4 analysis).
 
