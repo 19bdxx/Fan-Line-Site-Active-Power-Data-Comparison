@@ -13,9 +13,19 @@
     第二类 —— 部分通讯中断（同一分钟 5~79 台风机同时开始重复）
     第三类 —— 单机异常（≤4 台同时，需按状态码和持续时长进一步判断）
 
+集电线路分组（用于分线路分析）：
+    WU  （戊线）—— 风机 63~109，47 台，全部明阳 MySE6.45-180
+    DING（丁线）—— 风机 110~152，43 台，全部东气 DEW-D7000-184
+    BING（丙线）—— 风机 153~199，47 台，明阳×16 + 金风×31
+
+异常期间 Fan vs Line 比较：
+    在 Type1 全场通讯中断事件中，风机汇总 SCADA 值与集电线路 CT 测点均会冻结，
+    但两者恢复时间不同：线路 CT 通常比风机 SCADA 提前恢复，期间产生"幻影差值"。
+
 输入：
     #7-3检查风机数据连续相同情况/峡阳B/联合重复值检测结果.xlsx
     #7-2检查集电线路-全站功率数据连续相同情况/峡阳B/每列连续重复检测结果.csv
+    DATA/峡阳B/#7-1*.csv（合并 SCADA 数据，用于异常期间对比分析）
 
 输出：
     DATA/峡阳B/analysis_output/
@@ -23,13 +33,18 @@
         26_fan_zero_power_classification.png     零值卡值细分分类
         27_mass_event_timeline.png               第一类事件时间轴
         28_line_repeat_analysis.png              集电线路连续重复分析
+        29_per_line_anomaly_distribution.png     分集电线路的异常类型分布（新增）
+        30a_anomaly_fan_vs_line_timeseries.png   典型异常事件 Fan vs Line 时序（新增）
+        30b_anomaly_vs_normal_diff_distribution.png  正常 vs 异常 Fan−Line 差值分布（新增）
     #7-4分析结果/峡阳B/
         fan_repeat_classified.csv                风机卡值分类明细
         fan_repeat_cleaning_summary.csv          清洗建议汇总（按风机）
         line_repeat_classified.csv               集电线路卡值分类明细
+        per_line_anomaly_breakdown.csv           分集电线路异常类型统计（新增）
 """
 
 import os
+import glob
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -80,6 +95,14 @@ def get_manufacturer(fan_num: int) -> str:
     if fan_num in MINGYANG: return '明阳'
     if fan_num in DONGQI:   return '东气'
     if fan_num in JINFENG:  return '金风'
+    return '未知'
+
+
+def get_line(fan_num: int) -> str:
+    """将风机编号映射到对应的集电线路（WU/DING/BING）。"""
+    if 63  <= fan_num <= 109: return 'WU'
+    if 110 <= fan_num <= 152: return 'DING'
+    if 153 <= fan_num <= 199: return 'BING'
     return '未知'
 
 
@@ -153,6 +176,7 @@ fan_df['mass_fan_count'] = fan_df['开始时间'].map(time_start_counts)
 
 # 分类
 fan_df['anomaly_type'] = fan_df.apply(classify_anomaly, axis=1)
+fan_df['line']         = fan_df['风机编号'].apply(get_line)
 
 print("分类完成，异常类型分布：")
 type_summary = fan_df.groupby('anomaly_type')['持续长度'].agg(段数='count', 总记录数='sum').sort_values('总记录数', ascending=False)
@@ -450,6 +474,258 @@ print("  ✅ 28_line_repeat_analysis.png")
 
 
 # ══════════════════════════════════════════════════════════════
+# 新增：集电线路维度数据质量分析
+# ══════════════════════════════════════════════════════════════
+
+# ── 新增：按集电线路统计异常类型 ─────────────────────────────────────
+print("\n=== 按集电线路的异常类型分布 ===")
+per_line_anomaly = (
+    fan_df.groupby(['line', 'anomaly_type'])['持续长度']
+    .agg(段数='count', 总记录数='sum')
+    .reset_index()
+    .sort_values(['line', '总记录数'], ascending=[True, False])
+)
+print(per_line_anomaly.to_string())
+per_line_anomaly.to_csv(
+    os.path.join(OUT_DATA_DIR, 'per_line_anomaly_breakdown.csv'),
+    index=False, encoding='utf-8-sig'
+)
+print("✅ 按线路异常汇总已保存")
+
+
+# ── Fig 29: 分集电线路的风机异常类型分布 ────────────────────────────────
+print("\n生成图表 29 ...")
+LINE_META = [
+    ('BING', 47, '明阳×16 + 金风×31'),
+    ('DING', 43, '东气×43'),
+    ('WU',   47, '明阳×47'),
+]
+fig, axes = plt.subplots(1, 3, figsize=(19, 6))
+for (lname, n_fans, mfr_desc), ax in zip(LINE_META, axes):
+    sub = fan_df[fan_df['line'] == lname]
+    ls  = sub.groupby('anomaly_type')['持续长度'].agg(
+        段数='count', 总记录数='sum'
+    ).sort_values('总记录数', ascending=True)
+    y_pos      = np.arange(len(ls))
+    colors_bar = [COLORS.get(t, '#7f7f7f') for t in ls.index]
+    ax.barh(y_pos, ls['总记录数'], color=colors_bar, alpha=0.85, height=0.55)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(ls.index, fontsize=8.5)
+    ax.set_xlabel('总记录数（分钟）', fontsize=9)
+    ax.set_title(f'{lname} 线路（{n_fans} 台）\n{mfr_desc}', fontsize=10)
+    for j, (seg, rec) in enumerate(zip(ls['段数'], ls['总记录数'])):
+        ax.text(rec + max(ls['总记录数']) * 0.01, j,
+                f'{rec:,} / {seg}段', va='center', fontsize=7.5)
+    ax.set_xlim(0, max(ls['总记录数']) * 1.35)
+    ax.grid(True, alpha=0.2, axis='x')
+patches29 = [
+    mpatches.Patch(color='#d62728', label='第一类：全场通讯中断（确定删除）'),
+    mpatches.Patch(color='#ff7f0e', label='第二类：部分通讯中断（确定删除）'),
+    mpatches.Patch(color='#e377c2', label='第三类：单机非零卡值（确定删除）'),
+    mpatches.Patch(color='#9467bd', label='第三类：通讯故障零值（建议删除）'),
+    mpatches.Patch(color='#8c564b', label='第三类：发电状态零值（建议删除）'),
+    mpatches.Patch(color='#2ca02c', label='正常停机零值（建议保留）'),
+    mpatches.Patch(color='#bcbd22', label='零值-状态待核实（人工复核）'),
+]
+axes[1].legend(handles=patches29, fontsize=7.5, loc='lower right',
+               bbox_to_anchor=(0.5, -0.45), ncol=1)
+plt.suptitle(
+    '分集电线路：风机 SCADA 连续相同异常类型分布\n'
+    '（BING=丙线, DING=丁线, WU=戊线 | 横轴：各线路风机重复段总记录数）',
+    fontsize=11, y=1.02
+)
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_FIG_DIR, '29_per_line_anomaly_distribution.png'),
+            dpi=150, bbox_inches='tight')
+plt.close()
+print("  ✅ 29_per_line_anomaly_distribution.png")
+
+
+# ── 加载 SCADA 合并数据（用于异常期间 Fan vs Line 对比）─────────────────
+SCADA_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DATA", "峡阳B")
+SCADA_COLS = [
+    'timestamp',
+    'ACTIVE_POWER_BING', 'ACTIVE_POWER_DING', 'ACTIVE_POWER_WU',
+    'BING_ACTIVE_POWER_SUM_S1', 'DING_ACTIVE_POWER_SUM_S1', 'WU_ACTIVE_POWER_SUM_S1',
+    'BING_ACTIVE_POWER_SUM_S2', 'DING_ACTIVE_POWER_SUM_S2', 'WU_ACTIVE_POWER_SUM_S2',
+]
+print("\n加载 SCADA 合并数据（用于异常期间 Fan vs Line 对比）...")
+_csv_files = sorted(glob.glob(os.path.join(SCADA_DATA_DIR, "*with_sum*.csv")))
+_scada_parts = []
+for f in _csv_files:
+    try:
+        _df = pd.read_csv(f, usecols=SCADA_COLS, parse_dates=['timestamp'])
+        _scada_parts.append(_df)
+        print(f"  加载: {os.path.basename(f)}  ({len(_df):,} 条)")
+    except Exception as e:
+        print(f"  跳过: {os.path.basename(f)} ({e})")
+
+if _scada_parts:
+    scada = pd.concat(_scada_parts, ignore_index=True)
+    scada.sort_values('timestamp', inplace=True)
+    scada.drop_duplicates(subset='timestamp', inplace=True)
+    scada.reset_index(drop=True, inplace=True)
+    scada['timestamp'] = pd.to_datetime(scada['timestamp'])
+    print(f"  合并后: {len(scada):,} 条  "
+          f"({scada['timestamp'].min().date()} ~ {scada['timestamp'].max().date()})")
+
+    # ── 标注 SCADA 时间戳的异常状态 ─────────────────────────────────────
+    def _mark_intervals(ts_arr, segs_df):
+        """向量化区间标注：返回 bool ndarray，与 ts_arr 等长。"""
+        if len(segs_df) == 0:
+            return np.zeros(len(ts_arr), dtype=bool)
+        mask   = np.zeros(len(ts_arr), dtype=bool)
+        starts = segs_df['开始时间'].values.astype('datetime64[ns]')
+        ends   = segs_df['结束时间'].values.astype('datetime64[ns]')
+        ts_np  = ts_arr.astype('datetime64[ns]')
+        for t0, t1 in zip(starts, ends):
+            mask |= (ts_np >= t0) & (ts_np <= t1)
+        return mask
+
+    ts_arr = scada['timestamp'].values
+
+    # Type1：全场通讯中断（全线路同步冻结）
+    type1_segs_u = (fan_df[fan_df['anomaly_type'] == '第一类-全场通讯中断']
+                    .drop_duplicates(subset=['开始时间', '结束时间'])
+                    [['开始时间', '结束时间']])
+    print(f"  标注 Type1（{len(type1_segs_u)} 个唯一事件窗口）...")
+    scada['is_type1'] = _mark_intervals(ts_arr, type1_segs_u)
+
+    # Type2：按集电线路分别标注
+    for lname in ['BING', 'DING', 'WU']:
+        t2_segs = (fan_df[(fan_df['anomaly_type'] == '第二类-部分通讯中断') &
+                          (fan_df['line'] == lname)]
+                   .drop_duplicates(subset=['开始时间', '结束时间'])
+                   [['开始时间', '结束时间']])
+        print(f"  标注 Type2-{lname}（{len(t2_segs)} 个唯一事件窗口）...")
+        scada[f'is_type2_{lname}'] = _mark_intervals(ts_arr, t2_segs)
+
+    n_t1 = scada['is_type1'].sum()
+    print(f"  Type1 标注: {n_t1:,} 条 ({n_t1 / len(scada) * 100:.1f}% of SCADA timestamps)")
+
+    # ── Fig 30a: 典型 Type1 事件前后的 Fan vs Line 时序图 ─────────────────
+    print("\n生成图表 30a ...")
+    # 选最大事件（fan_count 最多且 avg_dur ≥ 10 min）
+    t1_events = (fan_df[fan_df['anomaly_type'] == '第一类-全场通讯中断']
+                 .groupby('开始时间').agg(
+                     fan_count=('风机编号', 'count'),
+                     avg_dur=('持续长度', 'mean')
+                 ).reset_index()
+                 .sort_values('fan_count', ascending=False))
+    long_events = t1_events[t1_events['avg_dur'] >= 10]
+    best_event  = long_events.iloc[0] if len(long_events) > 0 else t1_events.iloc[0]
+    evt_time    = best_event['开始时间']
+    evt_dur     = int(best_event['avg_dur'])
+    evt_fans    = int(best_event['fan_count'])
+
+    PRE_MIN  = 30
+    POST_MIN = evt_dur + 30
+    t_win_s  = evt_time - pd.Timedelta(minutes=PRE_MIN)
+    t_win_e  = evt_time + pd.Timedelta(minutes=POST_MIN)
+    win = scada[(scada['timestamp'] >= t_win_s) & (scada['timestamp'] <= t_win_e)].copy()
+
+    LINE_PAIRS_30 = [
+        ('BING', 'BING_ACTIVE_POWER_SUM_S1', 'ACTIVE_POWER_BING', '#ff7f0e'),
+        ('DING', 'DING_ACTIVE_POWER_SUM_S1', 'ACTIVE_POWER_DING', '#2ca02c'),
+        ('WU',   'WU_ACTIVE_POWER_SUM_S1',   'ACTIVE_POWER_WU',   '#1f77b4'),
+    ]
+    fig, axes30 = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+    for (lname, fan_col, line_col, c_fan), ax in zip(LINE_PAIRS_30, axes30):
+        ax.plot(win['timestamp'], win[fan_col],
+                color=c_fan, lw=1.6, label=f'{lname} 风机汇总 S1（SCADA 可能冻结）')
+        ax.plot(win['timestamp'], win[line_col],
+                color='gray', lw=1.3, ls='--', alpha=0.9,
+                label=f'{lname} 集电线路 CT 测点（独立采集）')
+        # Shade anomaly window
+        ax.axvspan(evt_time,
+                   evt_time + pd.Timedelta(minutes=evt_dur),
+                   color='red', alpha=0.10, zorder=0)
+        ax.axvline(evt_time,
+                   color='red', ls=':', lw=1.2, label=f'异常开始 {evt_time.strftime("%H:%M")}')
+        ax.axvline(evt_time + pd.Timedelta(minutes=evt_dur),
+                   color='darkorange', ls=':', lw=1.2,
+                   label=f'Fan SCADA 恢复 {(evt_time + pd.Timedelta(minutes=evt_dur)).strftime("%H:%M")}')
+        # Twin axis: diff
+        diff = win[fan_col] - win[line_col]
+        ax_r = ax.twinx()
+        ax_r.plot(win['timestamp'], diff, color='purple', lw=0.9, alpha=0.55, ls=':')
+        ax_r.set_ylabel('Fan−Line (MW)', fontsize=7.5, color='purple', labelpad=2)
+        ax_r.tick_params(axis='y', labelcolor='purple', labelsize=7)
+        ax.set_ylabel(f'{lname} 功率 (MW)', fontsize=9)
+        ax.legend(fontsize=7.5, loc='upper left', ncol=2)
+        ax.grid(True, alpha=0.2)
+        ax.set_title(
+            f'{lname} 线路：Fan_sum_S1 vs 集电线路 CT（红色阴影 = Fan SCADA 冻结期）',
+            fontsize=9
+        )
+    plt.suptitle(
+        f'典型第一类异常（全场通讯中断）前后的 Fan vs Line 对比\n'
+        f'事件：{evt_time.strftime("%Y-%m-%d %H:%M")}，{evt_fans} 台同时冻结，'
+        f'持续约 {evt_dur} 分钟\n'
+        f'关键观察：集电线路 CT 与 Fan SCADA 同步冻结，但 CT 更早恢复，'
+        f'期间差值（紫色虚线）出现"幻影偏移"',
+        fontsize=10, y=1.01
+    )
+    plt.xticks(rotation=20, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT_FIG_DIR, '30a_anomaly_fan_vs_line_timeseries.png'),
+                dpi=150, bbox_inches='tight')
+    plt.close()
+    print("  ✅ 30a_anomaly_fan_vs_line_timeseries.png")
+
+    # ── Fig 30b: 正常 vs 第一类异常 时段 Fan−Line 差值分布对比 ─────────────
+    print("生成图表 30b ...")
+    fig, axes30b = plt.subplots(1, 3, figsize=(16, 5))
+    for (lname, fan_col, line_col, c_fan), ax in zip(LINE_PAIRS_30, axes30b):
+        diff_series = scada[fan_col] - scada[line_col]
+        # Restrict to "generating mode" (both fan_sum > 0 and line > 0)
+        gen_mask = (scada[fan_col] > 0) & (scada[line_col] > 0)
+        normal_d  = diff_series[gen_mask & ~scada['is_type1']]
+        anomaly_d = diff_series[gen_mask & scada['is_type1']]
+        if len(anomaly_d) == 0:
+            ax.set_title(f'{lname}: 异常时段数据不足', fontsize=9)
+            continue
+        bins = np.linspace(
+            min(normal_d.quantile(0.01), anomaly_d.quantile(0.01)),
+            max(normal_d.quantile(0.99), anomaly_d.quantile(0.99)),
+            55
+        )
+        ax.hist(normal_d,  bins=bins, density=True, alpha=0.6,
+                color='steelblue', label=f'正常时段 (n={len(normal_d):,})')
+        ax.hist(anomaly_d, bins=bins, density=True, alpha=0.6,
+                color='#d62728',   label=f'第一类异常 (n={len(anomaly_d):,})')
+        ax.axvline(normal_d.mean(),  color='steelblue', ls='--', lw=1.8,
+                   label=f'正常均值 {normal_d.mean():.1f} MW')
+        ax.axvline(anomaly_d.mean(), color='#d62728',   ls='--', lw=1.8,
+                   label=f'异常均值 {anomaly_d.mean():.1f} MW')
+        ax.set_xlabel('Fan_sum_S1 − Line (MW)', fontsize=9)
+        ax.set_ylabel('密度', fontsize=9)
+        ax.set_title(
+            f'{lname} 线路：Fan−Line 差值分布\n'
+            f'正常均值 {normal_d.mean():.1f} MW  vs  '
+            f'异常均值 {anomaly_d.mean():.1f} MW\n'
+            f'（差值偏移来自 Fan 冻结而 Line CT 已恢复）',
+            fontsize=8.5
+        )
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.2)
+    plt.suptitle(
+        '正常时段 vs 第一类异常时段：Fan_sum_S1 − 集电线路测点 差值分布对比\n'
+        '（仅限发电工况：Fan_S1 > 0 且 Line > 0）\n'
+        '差值在异常期间均值偏移 → 主因：Line CT 提前恢复，Fan SCADA 仍冻结',
+        fontsize=10, y=1.04
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT_FIG_DIR, '30b_anomaly_vs_normal_diff_distribution.png'),
+                dpi=150, bbox_inches='tight')
+    plt.close()
+    print("  ✅ 30b_anomaly_vs_normal_diff_distribution.png")
+
+else:
+    print("  ⚠️ 未找到 SCADA 合并数据，跳过 Fig 30a/30b（Fan vs Line 异常对比）")
+
+
+# ══════════════════════════════════════════════════════════════
 # 终端汇总输出
 # ══════════════════════════════════════════════════════════════
 print()
@@ -470,6 +746,16 @@ print()
 print(f"  全部风机重复段合计: {total_segs:,} 段, {total_recs:,} 条")
 print()
 
+# Per-line fan anomaly breakdown
+print("  === 按集电线路汇总（风机） ===")
+for lname in ['BING', 'DING', 'WU']:
+    sub_l = fan_df[fan_df['line'] == lname]
+    del_l  = sub_l[sub_l['清洗建议'] == '删除']['持续长度'].sum()
+    keep_l = sub_l[sub_l['清洗建议'] == '保留']['持续长度'].sum()
+    rev_l  = sub_l[sub_l['清洗建议'] == '人工复核']['持续长度'].sum()
+    print(f"  {lname}: 删除 {del_l:,} 条 | 保留 {keep_l:,} 条 | 复核 {rev_l:,} 条")
+print()
+
 # Per-line collection stats
 print("  集电线路非零卡值（确定删除）:")
 for col in ['ACTIVE_POWER_BING', 'ACTIVE_POWER_DING', 'ACTIVE_POWER_WU']:
@@ -484,6 +770,6 @@ for col in ['ACTIVE_POWER_BING', 'ACTIVE_POWER_DING', 'ACTIVE_POWER_WU']:
 print()
 print("=" * 70)
 print("全部结果已保存至：")
-print(f"  图表: {OUT_FIG_DIR}/25~28_*.png")
+print(f"  图表: {OUT_FIG_DIR}/25~30*.png")
 print(f"  数据: {OUT_DATA_DIR}/")
 print("=" * 70)
