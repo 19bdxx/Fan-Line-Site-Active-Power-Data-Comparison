@@ -51,7 +51,8 @@ warnings.filterwarnings("ignore")
 # 0. 路径配置
 # ─────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(SCRIPT_DIR, "DATA", "峡阳B")
+ROOT_DIR = os.path.join(SCRIPT_DIR, "..")
+DATA_DIR = os.path.join(ROOT_DIR, "DATA", "峡阳B")
 OUTPUT_DIR = os.path.join(DATA_DIR, "analysis_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

@@ -91,9 +91,16 @@ def summarize_joint_repeats(results, save_path):
 
 
 if __name__ == "__main__":
-    # ⚠️ 修改为你的实际路径
-    file_path = r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7补齐时间戳\峡阳B\#7峡阳B_20240315-20241224.csv"
-    save_dir = r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7-2检查集电线路-全站功率数据连续相同情况\峡阳B"
+    import glob as _glob
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _ROOT_DIR   = os.path.join(_SCRIPT_DIR, "..")
+
+    # 输入文件：DATA/峡阳B/ 下的原始 SCADA CSV（未 with_sum 处理的完整文件）
+    # 若只有分片，可先合并，或修改此路径
+    _csv_candidates = sorted(_glob.glob(os.path.join(_ROOT_DIR, "DATA", "峡阳B", "*with_sum*.csv")))
+    file_path = _csv_candidates[0] if _csv_candidates else ""
+
+    save_dir = os.path.join(_ROOT_DIR, "分析结果", "风机重复检测", "峡阳B")
 
     field_prefixes = [
         'STATUS_',

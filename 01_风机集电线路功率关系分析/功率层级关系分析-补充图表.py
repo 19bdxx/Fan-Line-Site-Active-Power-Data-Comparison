@@ -38,7 +38,8 @@ matplotlib.rcParams["font.family"] = "Noto Sans CJK JP"
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 # ── 路径 ─────────────────────────────────────────────────────────────────────
-DATA_DIR = "DATA/峡阳B"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(_SCRIPT_DIR, "..", "DATA", "峡阳B")
 OUT_DIR = os.path.join(DATA_DIR, "analysis_output")
 os.makedirs(OUT_DIR, exist_ok=True)
 

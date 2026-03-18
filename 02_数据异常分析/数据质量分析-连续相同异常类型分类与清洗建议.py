@@ -72,10 +72,12 @@ else:
           "请安装 fonts-noto-cjk 后重新运行。")
 
 # ── 路径配置 ──────────────────────────────────────────────────
-FAN_EXCEL    = "#7-3检查风机数据连续相同情况/峡阳B/联合重复值检测结果.xlsx"
-LINE_CSV     = "#7-2检查集电线路-全站功率数据连续相同情况/峡阳B/每列连续重复检测结果.csv"
-OUT_FIG_DIR  = "DATA/峡阳B/analysis_output"
-OUT_DATA_DIR = "#7-4分析结果/峡阳B"
+_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR    = os.path.join(_SCRIPT_DIR, "..")
+FAN_EXCEL    = os.path.join(_ROOT_DIR, "分析结果", "风机重复检测", "峡阳B", "联合重复值检测结果.xlsx")
+LINE_CSV     = os.path.join(_ROOT_DIR, "分析结果", "集电线路重复检测", "峡阳B", "每列连续重复检测结果.csv")
+OUT_FIG_DIR  = os.path.join(_ROOT_DIR, "DATA", "峡阳B", "analysis_output")
+OUT_DATA_DIR = os.path.join(_ROOT_DIR, "分析结果", "数据质量分析", "峡阳B")
 
 os.makedirs(OUT_FIG_DIR,  exist_ok=True)
 os.makedirs(OUT_DATA_DIR, exist_ok=True)
@@ -559,7 +561,7 @@ print("  ✅ 29_per_line_anomaly_distribution.png")
 
 
 # ── 加载 SCADA 合并数据（用于异常期间 Fan vs Line 对比）─────────────────
-SCADA_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DATA", "峡阳B")
+SCADA_DATA_DIR = os.path.join(_ROOT_DIR, "DATA", "峡阳B")
 SCADA_COLS = [
     'timestamp',
     'ACTIVE_POWER_BING', 'ACTIVE_POWER_DING', 'ACTIVE_POWER_WU',

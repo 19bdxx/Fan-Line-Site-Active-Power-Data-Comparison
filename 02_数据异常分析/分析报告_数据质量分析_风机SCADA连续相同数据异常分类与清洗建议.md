@@ -92,7 +92,7 @@
 | 零值-状态待核实 | 260 | 26,167 | **人工复核** |
 | **合计** | **16,258** | **2,328,347** | — |
 
-![异常类型分布](DATA/峡阳B/analysis_output/25_fan_anomaly_type_distribution.png)
+![异常类型分布](../DATA/峡阳B/analysis_output/25_fan_anomaly_type_distribution.png)
 
 **清洗效果预估**：
 - 确定删除：14,560 段，2,120,211 条（占全量重复记录的 **91.1%**）
@@ -108,7 +108,7 @@
 - **有功功率**：93% 的段为非零值（通讯断开时保持了当时的发电数据）
 - **规律**：有时每隔 10 分钟出现一次（05:00, 05:09 等），疑与 SCADA 定时采集任务有关
 
-![第一类事件时间轴](DATA/峡阳B/analysis_output/27_mass_event_timeline.png)
+![第一类事件时间轴](../DATA/峡阳B/analysis_output/27_mass_event_timeline.png)
 
 ### 典型事件案例
 
@@ -161,7 +161,7 @@ elif active_power == 0:
         → 人工复核（状态码不明确）
 ```
 
-![零值卡值细分分类](DATA/峡阳B/analysis_output/26_fan_zero_power_classification.png)
+![零值卡值细分分类](../DATA/峡阳B/analysis_output/26_fan_zero_power_classification.png)
 
 ---
 
@@ -192,7 +192,7 @@ elif active_power == 0:
 | ACTIVE_POWER_STATION | 1（长期）| 180,647 | 7 | 8,457 |
 | LIMIT_POWER | 443（正常）| 390,378 | — | — |
 
-![集电线路重复分析](DATA/峡阳B/analysis_output/28_line_repeat_analysis.png)
+![集电线路重复分析](../DATA/峡阳B/analysis_output/28_line_repeat_analysis.png)
 
 **集电线路清洗建议**：
 - **非零卡值**（BING/DING/WU 各约 10 段）→ 确定删除，影响极小
@@ -206,7 +206,7 @@ elif active_power == 0:
 
 在全场三类异常的整体分类基础上，按 BING/DING/WU 三条集电线路分别统计，揭示各线路的异常模式差异。
 
-![分集电线路异常类型分布](DATA/峡阳B/analysis_output/29_per_line_anomaly_distribution.png)
+![分集电线路异常类型分布](../DATA/峡阳B/analysis_output/29_per_line_anomaly_distribution.png)
 
 ### 分线路异常统计（全量风机 SCADA 数据）
 
@@ -256,7 +256,7 @@ elif active_power == 0:
 
 ### 典型事件时序对比（第一类全场通讯中断）
 
-![异常期间Fan vs Line时序](DATA/峡阳B/analysis_output/30a_anomaly_fan_vs_line_timeseries.png)
+![异常期间Fan vs Line时序](../DATA/峡阳B/analysis_output/30a_anomaly_fan_vs_line_timeseries.png)
 
 以 **2024-11-02 10:38** 的典型 Type1 事件（137 台同时冻结，持续约 22 分钟）为例，
 数据揭示了通讯中断时两类测量值的不同行为：
@@ -285,7 +285,7 @@ elif active_power == 0:
 
 ### 异常时段与正常时段 Fan−Line 差值分布对比
 
-![差值分布对比](DATA/峡阳B/analysis_output/30b_anomaly_vs_normal_diff_distribution.png)
+![差值分布对比](../DATA/峡阳B/analysis_output/30b_anomaly_vs_normal_diff_distribution.png)
 
 | 线路 | 正常时段 Fan−Line 均值 | Type1 异常时段 Fan−Line 均值 | 偏移 |
 |------|---------------------|--------------------------|------|
@@ -303,7 +303,7 @@ elif active_power == 0:
 **对 Fan−Line 传输损耗分析的影响**：
 - 异常期间的 Fan−Line 差值不反映真实传输损耗，应在传输损耗统计时将 Type1/Type2 异常时段排除
 - 传输损耗分析中通过"仅分析发电工况（Fan_S2>0 且 Line>0）"部分过滤了异常影响，但建议进一步叠加异常时段标记进行更精确的清洗
-- 详见：[分析报告_风机集电线路全站功率层级关系.md](分析报告_风机集电线路全站功率层级关系.md) 第5章
+- 详见：[分析报告_风机集电线路全站功率层级关系.md](../01_风机集电线路功率关系分析/分析报告_风机集电线路全站功率层级关系.md) 第5章
 
 **对数据清洗优先级的建议**：
 1. 先清洗风机 SCADA 中的 Type1/Type2 事件（已确定数据冻结）
@@ -333,10 +333,10 @@ elif active_power == 0:
 
 | 输出文件 | 路径 | 说明 |
 |---------|------|------|
-| 风机卡值分类明细 | `#7-4分析结果/峡阳B/fan_repeat_classified.csv` | 16,258 条重复段的分类结果 |
-| 按风机汇总清洗建议 | `#7-4分析结果/峡阳B/fan_repeat_cleaning_summary.csv` | 每台风机的清洗建议汇总 |
-| 集电线路卡值分类 | `#7-4分析结果/峡阳B/line_repeat_classified.csv` | 集电线路重复段分类明细 |
-| 分线路异常统计 | `#7-4分析结果/峡阳B/per_line_anomaly_breakdown.csv` | 按 BING/DING/WU 分线路统计 |
+| 风机卡值分类明细 | `分析结果/数据质量分析/峡阳B/fan_repeat_classified.csv` | 16,258 条重复段的分类结果 |
+| 按风机汇总清洗建议 | `分析结果/数据质量分析/峡阳B/fan_repeat_cleaning_summary.csv` | 每台风机的清洗建议汇总 |
+| 集电线路卡值分类 | `分析结果/数据质量分析/峡阳B/line_repeat_classified.csv` | 集电线路重复段分类明细 |
+| 分线路异常统计 | `分析结果/数据质量分析/峡阳B/per_line_anomaly_breakdown.csv` | 按 BING/DING/WU 分线路统计 |
 
 ---
 
