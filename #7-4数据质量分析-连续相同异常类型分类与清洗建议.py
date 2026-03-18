@@ -51,8 +51,25 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.font_manager as _fm
 import warnings
 warnings.filterwarnings("ignore")
+
+# ── 中文字体配置 ──────────────────────────────────────────────
+# 重建字体缓存（确保新安装的 Noto CJK 字体被识别）
+_fm._load_fontmanager(try_read_cache=False)
+_CJK_FONT = next(
+    (f.name for f in _fm.fontManager.ttflist
+     if any(k in f.name for k in ('Noto Sans CJK', 'Noto Serif CJK', 'WenQuanYi', 'SimHei', 'Microsoft YaHei'))),
+    None
+)
+if _CJK_FONT:
+    matplotlib.rcParams['font.family']      = _CJK_FONT
+    matplotlib.rcParams['axes.unicode_minus'] = False
+else:
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    print("⚠️  未找到中文字体，图表中文字符可能显示为方块。"
+          "请安装 fonts-noto-cjk 后重新运行。")
 
 # ── 路径配置 ──────────────────────────────────────────────────
 FAN_EXCEL    = "#7-3检查风机数据连续相同情况/峡阳B/联合重复值检测结果.xlsx"

@@ -43,6 +43,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
+import matplotlib.font_manager as _fm
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -54,11 +55,22 @@ DATA_DIR = os.path.join(SCRIPT_DIR, "DATA", "峡阳B")
 OUTPUT_DIR = os.path.join(DATA_DIR, "analysis_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 中文字体支持（Linux 环境使用 DejaVu，标签用英文以保证渲染）
-plt.rcParams.update({
+# 中文字体配置（优先使用已安装的 Noto CJK 字体）
+_fm._load_fontmanager(try_read_cache=False)
+_CJK_FONT = next(
+    (f.name for f in _fm.fontManager.ttflist
+     if any(k in f.name for k in ('Noto Sans CJK', 'Noto Serif CJK', 'WenQuanYi', 'SimHei', 'Microsoft YaHei'))),
+    None
+)
+if _CJK_FONT:
+    matplotlib.rcParams['font.family']        = _CJK_FONT
+    matplotlib.rcParams['axes.unicode_minus'] = False
+else:
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    print("⚠️  未找到中文字体，请安装 fonts-noto-cjk 后重新运行。")
+matplotlib.rcParams.update({
     "figure.dpi": 150,
     "savefig.dpi": 150,
-    "axes.unicode_minus": False,
 })
 
 
