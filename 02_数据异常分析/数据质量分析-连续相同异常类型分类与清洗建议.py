@@ -742,6 +742,198 @@ if _scada_parts:
 
 else:
     print("  ⚠️ 未找到 SCADA 合并数据，跳过 Fig 30a/30b（Fan vs Line 异常对比）")
+    scada = None
+
+
+# ══════════════════════════════════════════════════════════════
+# 动态传输损耗模型拟合（P = CT，集电线路功率）及 fan_repeat_six_types.csv 生成
+#
+# 物理说明：
+#   实际线损 L = FAN_SUM − CT
+#   集电线路 CT 数据由独立互感器采集，精度高，是拟合的可靠自变量。
+#   FAN_SUM 是风机 SCADA 读数求和，因冻结/零值等异常导致数据质量较差，
+#   不宜作为拟合 P；改用 CT 作为 P，模型更具物理正确性。
+#
+# 拟合流程：
+#   1. 对每条集电线路独立排除该线路自身所有重复时段（A~E + Normal）
+#   2. 保留 CT > 2 MW 且 FAN_SUM > 2 MW 的有效发电工况
+#   3. 按 CT 分 15 等频分位箱，取箱中位数
+#   4. 对箱中位数拟合二次多项式：L̂ = a·CT² + b·CT + c
+# ══════════════════════════════════════════════════════════════
+
+# 集电线路列映射
+_LINE_CT_COL  = {'BING': 'ACTIVE_POWER_BING',      'DING': 'ACTIVE_POWER_DING',      'WU': 'ACTIVE_POWER_WU'}
+_LINE_FAN_COL = {'BING': 'BING_ACTIVE_POWER_SUM_S1','DING': 'DING_ACTIVE_POWER_SUM_S1','WU': 'WU_ACTIVE_POWER_SUM_S1'}
+_LINE_NAME_ZH = {'BING': '丙（BING）', 'DING': '丁（DING）', 'WU': '戊（WU）'}
+_N_BINS = 15
+
+# 六类分类 → 集电线路映射（用于排除各线路自身异常时段）
+# fan_df 的 'line' 列已由前面步骤生成
+ANOM_SIX_TYPES = ['第一类-全场通讯中断', '第二类-部分通讯中断',
+                   '第三类-单机通讯故障', '第三类-发电状态零值',
+                   '第三类-单机非零卡值', '正常停机-保留', '零值-状态待核实']
+# 以上涵盖全部七种原始异常类型（含 Normal 对应的"正常停机-保留"及"零值-状态待核实"）
+
+loss_models = {}   # line → numpy polynomial coefficients
+
+if scada is not None:
+    print("\n" + "=" * 70)
+    print("  拟合动态传输损耗模型（P = CT，集电线路功率）")
+    print("=" * 70)
+
+    for line in ['BING', 'DING', 'WU']:
+        ct_col  = _LINE_CT_COL[line]
+        fan_col = _LINE_FAN_COL[line]
+
+        # 本线路全部异常段（所有七种类型合并）
+        anom_segs = (fan_df[fan_df['line'] == line][['开始时间', '结束时间']]
+                     .drop_duplicates())
+        print(f"\n  {_LINE_NAME_ZH[line]}：异常段 {len(anom_segs)} 个")
+
+        # 向量化区间标注
+        _mask = np.zeros(len(scada), dtype=bool)
+        _ts_np = scada['timestamp'].values.astype('datetime64[ns]')
+        for _t0, _t1 in zip(anom_segs['开始时间'].values.astype('datetime64[ns]'),
+                             anom_segs['结束时间'].values.astype('datetime64[ns]')):
+            _mask |= (_ts_np >= _t0) & (_ts_np <= _t1)
+
+        # 正常时段：非异常 + CT>2MW + FAN_SUM>2MW
+        _normal = scada[~_mask].copy()
+        _normal = _normal[(_normal[ct_col] > 2) & (_normal[fan_col] > 2)].copy()
+        _normal['_L'] = _normal[fan_col] - _normal[ct_col]   # 实际线损
+        _normal['_P'] = _normal[ct_col]                       # P = CT
+        print(f"    正常时段数据量：{len(_normal):,} 条（CT>2MW 且 FAN_SUM>2MW）")
+
+        # 等频分位数箱（15箱）→ 箱中位数拟合
+        _normal['_bin'] = pd.qcut(_normal['_P'], q=_N_BINS, duplicates='drop')
+        _bins = _normal.groupby('_bin', observed=True).agg(
+            P_med=('_P', 'median'), L_med=('_L', 'median'), n=('_P', 'count')
+        ).reset_index()
+
+        # 二次多项式拟合
+        _coeffs = np.polyfit(_bins['P_med'], _bins['L_med'], deg=2)
+        loss_models[line] = _coeffs
+
+        # 拟合质量
+        _L_hat_bins = np.polyval(_coeffs, _bins['P_med'])
+        _r2_bins = (1 - (((_bins['L_med'] - _L_hat_bins) ** 2).sum()
+                         / ((_bins['L_med'] - _bins['L_med'].mean()) ** 2).sum()))
+        _sigma = (_normal['_L'] - np.polyval(_coeffs, _normal['_P'])).std()
+        sign_b = '+' if _coeffs[1] >= 0 else '-'
+        sign_c = '+' if _coeffs[2] >= 0 else '-'
+        print(f"    拟合结果：L̂(CT) = {_coeffs[0]:.3e}·CT² {sign_b} {abs(_coeffs[1]):.5f}·CT "
+              f"{sign_c} {abs(_coeffs[2]):.4f}")
+        print(f"    R²(箱中位数) = {_r2_bins:.4f}   σ(原始数据) = {_sigma:.4f} MW   "
+              f"拟合点数 = {len(_normal):,}")
+
+    # ── 生成 fan_repeat_six_types.csv ──────────────────────────────────────
+    print("\n  生成 fan_repeat_six_types.csv ...")
+
+    # 读取已分类的风机重复段（fan_df 已包含六类重分类信息，但需映射到 A~E+Normal 标签）
+    # 此处重新从 fan_df 出发，利用已有的 anomaly_type 和 mass_fan_count 构建六类标签
+
+    # 六类标签映射
+    MASS_THRESH_A = 100   # ≥100 台且持续 [9,12] min → A
+    MASS_THRESH_B1 = 80   # ≥80 台（非A）→ B1
+
+    def _map_six_type(row) -> str:
+        """将原始三类标注映射到 A/B1/B2/C/D/E/Normal 六类。"""
+        atype = row['anomaly_type']
+        n     = row['mass_fan_count']
+        dur   = row['持续长度']
+        pw    = row['active_power']   # 冻结有功（kW），0 表示零值冻结
+
+        if atype == '第一类-全场通讯中断':
+            if n >= MASS_THRESH_A and 9 <= dur <= 12:
+                return 'A'
+            return 'B1'
+        if atype == '第二类-部分通讯中断':
+            return 'B2'
+        if atype == '第三类-单机通讯故障':
+            return 'C'
+        if atype == '第三类-发电状态零值':
+            return 'E'
+        if atype == '第三类-单机非零卡值':
+            return 'D'
+        # 正常停机-保留 / 零值-状态待核实 → Normal
+        return 'Normal'
+
+    fan_df['six_type'] = fan_df.apply(_map_six_type, axis=1)
+
+    # 加载 SCADA 数据并计算各重复段期间的集电线路均值
+    # 按 开始时间 ~ 结束时间 在 scada 中查询对应时段均值
+    scada_ts_idx = scada.set_index('timestamp')
+
+    def _get_line_avg(row):
+        """返回该重复段期间集电线路 CT 均值和 FAN_SUM 均值（MW）。"""
+        line = row['line']
+        t0   = row['开始时间']
+        t1   = row['结束时间']
+        ct_col_  = _LINE_CT_COL.get(line)
+        fan_col_ = _LINE_FAN_COL.get(line)
+        if ct_col_ is None or fan_col_ is None:
+            return pd.Series({'_ct': np.nan, '_fan': np.nan})
+        mask_ = (scada['timestamp'] >= t0) & (scada['timestamp'] <= t1)
+        sub_ = scada[mask_]
+        if len(sub_) == 0:
+            return pd.Series({'_ct': np.nan, '_fan': np.nan})
+        return pd.Series({'_ct': sub_[ct_col_].mean(), '_fan': sub_[fan_col_].mean()})
+
+    print("    计算各重复段期间集电线路均值（可能需要几分钟）...")
+    _avgs = fan_df.apply(_get_line_avg, axis=1)
+    fan_df['CT均值MW']      = _avgs['_ct']
+    fan_df['FAN_SUM均值MW'] = _avgs['_fan']
+
+    # 实际线损均值
+    fan_df['实际损耗均值MW'] = fan_df['FAN_SUM均值MW'] - fan_df['CT均值MW']
+
+    # 预期线损（使用 CT-based 模型）
+    def _expected_loss(row):
+        line  = row['line']
+        ct_v  = row['CT均值MW']
+        if line not in loss_models or np.isnan(ct_v) or ct_v <= 2:
+            return np.nan
+        return float(np.polyval(loss_models[line], ct_v))
+
+    fan_df['预期损耗均值MW'] = fan_df.apply(_expected_loss, axis=1)
+    fan_df['超额损耗均值MW'] = fan_df['实际损耗均值MW'] - fan_df['预期损耗均值MW']
+    fan_df['超额损耗总量MWmin'] = fan_df['超额损耗均值MW'] * fan_df['持续长度']
+    fan_df['超额损耗总量MWh']   = fan_df['超额损耗总量MWmin'] / 60.0
+
+    # 整理输出列
+    _out = fan_df[[
+        '风机编号', 'mfr', 'line', '开始时间', '结束时间', '持续长度',
+        'status', 'active_power', 'windspeed', 'mass_fan_count',
+        'six_type',
+        'CT均值MW', 'FAN_SUM均值MW', '实际损耗均值MW', '预期损耗均值MW',
+        '超额损耗均值MW', '超额损耗总量MWmin', '超额损耗总量MWh',
+    ]].copy()
+    _out.rename(columns={
+        'mfr':           '厂商',
+        'line':          '集电线路',
+        '持续长度':      '持续长度(min)',
+        'status':        '状态码',
+        'active_power':  '冻结有功kW',
+        'windspeed':     '冻结风速ms',
+        'mass_fan_count':'同时冻结风机数',
+        'six_type':      '异常类型',
+    }, inplace=True)
+    _out_path = os.path.join(OUT_DATA_DIR, 'fan_repeat_six_types.csv')
+    _out.to_csv(_out_path, index=False, encoding='utf-8-sig')
+    print(f"    ✅ fan_repeat_six_types.csv 已保存 ({len(_out):,} 行)")
+    print(f"       → {_out_path}")
+
+    # 快速摘要
+    print("\n  === 超额损耗汇总（每类型，唯一线路事件，MWh）===")
+    for _stype in ['A', 'B1', 'B2', 'C', 'D', 'E', 'Normal']:
+        _sub = _out[_out['异常类型'] == _stype]
+        for _line in ['BING', 'DING', 'WU']:
+            _u = _sub[_sub['集电线路'] == _line].drop_duplicates(subset=['开始时间', '持续长度(min)'])
+            _tot = (_u['超额损耗均值MW'] * _u['持续长度(min)'] / 60).sum()
+            print(f"    {_stype:6s} {_line}: {_tot:+.0f} MWh  ({len(_u)} 唯一事件)")
+
+else:
+    print("  ⚠️ 未找到 SCADA 数据，跳过传输损耗模型拟合及 fan_repeat_six_types.csv 生成")
 
 
 # ══════════════════════════════════════════════════════════════
