@@ -746,19 +746,27 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════
-# 动态传输损耗模型拟合（P = CT，集电线路功率）及 fan_repeat_six_types.csv 生成
+# 动态传输损耗模型拟合（P = max(CT,0)，集电线路有效功率）及 fan_repeat_six_types.csv 生成
 #
 # 物理说明：
-#   实际线损 L = FAN_SUM − CT
+#   实际线损 L = FAN_SUM − max(CT, 0)
 #   集电线路 CT 数据由独立互感器采集，精度高，是拟合的可靠自变量。
 #   FAN_SUM 是风机 SCADA 读数求和，因冻结/零值等异常导致数据质量较差，
-#   不宜作为拟合 P；改用 CT 作为 P，模型更具物理正确性。
+#   不宜作为拟合 P；改用 max(CT, 0) 作为 P_eff。
+#
+#   当 CT < 0 时，表示厂用电通过集电线路向风机供电（反向潮流），
+#   此时集电线路对外输出功率为 0，应按 P_eff = max(CT, 0) = 0 处理，
+#   传输损耗为 0。这些厂用电时段作为 P=0 锚点纳入拟合，
+#   将多项式截距约束在低值（此时 FAN_SUM 亦≈0，故 L≈0）。
 #
 # 拟合流程：
 #   1. 对每条集电线路独立排除该线路自身所有重复时段（A~E + Normal）
-#   2. 保留 CT > 2 MW 且 FAN_SUM > 2 MW 的有效发电工况
-#   3. 按 CT 分 15 等频分位箱，取箱中位数
-#   4. 对箱中位数拟合二次多项式：L̂ = a·CT² + b·CT + c
+#   2. 排除真正停电时段（CT 和 FAN_SUM 同时接近 0）
+#   3. 计算 P_eff = max(CT, 0)，L = FAN_SUM − P_eff
+#   4. 厂用电工况（CT≤0）：P=0，L≈0，作为锚点
+#      发电工况（CT>0 且 FAN_SUM>0）：按 P_eff 分 15 等频分位箱
+#   5. 将锚点与 15 个发电箱中位数合并，拟合二次多项式：L̂ = a·P² + b·P + c
+#      （c 被 P=0 锚点约束为低值，实现 L̂(0) ≈ 0）
 # ══════════════════════════════════════════════════════════════
 
 # 集电线路列映射
@@ -778,7 +786,7 @@ loss_models = {}   # line → numpy polynomial coefficients
 
 if scada is not None:
     print("\n" + "=" * 70)
-    print("  拟合动态传输损耗模型（P = CT，集电线路功率）")
+    print("  拟合动态传输损耗模型（P = max(CT,0)，含厂用电工况 P=0 锚点）")
     print("=" * 70)
 
     for line in ['BING', 'DING', 'WU']:
@@ -797,34 +805,51 @@ if scada is not None:
                              anom_segs['结束时间'].values.astype('datetime64[ns]')):
             _mask |= (_ts_np >= _t0) & (_ts_np <= _t1)
 
-        # 正常时段：非异常 + CT>2MW + FAN_SUM>2MW
+        # 正常时段：非异常，无 CT 下限（含 CT≤0 的厂用电工况作为 P=0 锚点）
+        # 物理依据：CT<0 表示厂用电对风机供电，此时 P_eff=max(CT,0)=0，
+        #           FAN_SUM 在该工况下亦≈0（均值约 -1 ~ -0.5 MW），故 L=FAN_SUM-0≈0，
+        #           将这些 P=0 的数据点纳入拟合，自然将多项式截距拉向零值附近。
         _normal = scada[~_mask].copy()
-        _normal = _normal[(_normal[ct_col] > 2) & (_normal[fan_col] > 2)].copy()
-        _normal['_L'] = _normal[fan_col] - _normal[ct_col]   # 实际线损
-        _normal['_P'] = _normal[ct_col]                       # P = CT
-        print(f"    正常时段数据量：{len(_normal):,} 条（CT>2MW 且 FAN_SUM>2MW）")
+        # 排除真正停电时段（CT 和 FAN_SUM 同时接近 0）
+        _normal = _normal[
+            ~((_normal[ct_col].abs() < 0.1) & (_normal[fan_col].abs() < 0.1))
+        ].copy()
+        _normal['_P'] = _normal[ct_col].clip(lower=0)    # P_eff = max(CT, 0)
+        _normal['_L'] = _normal[fan_col] - _normal['_P'] # L = FAN_SUM − max(CT, 0)
+        n_sta = (_normal['_P'] == 0).sum()   # 厂用电工况（CT≤0）
+        n_gen = (_normal['_P'] > 0).sum()    # 正常发电工况（CT>0）
+        print(f"    数据量：{len(_normal):,} 条（发电工况 {n_gen:,}，厂用电工况（P=0）{n_sta:,}）")
 
-        # 等频分位数箱（15箱）→ 箱中位数拟合
-        _normal['_bin'] = pd.qcut(_normal['_P'], q=_N_BINS, duplicates='drop')
-        _bins = _normal.groupby('_bin', observed=True).agg(
+        # 厂用电锚点（P=0，L_median≈FAN_SUM≈0）
+        _sta = _normal[_normal['_P'] == 0]
+        _anchor_L = _sta['_L'].median()
+        _anchor_bin = pd.DataFrame({'P_med': [0.0], 'L_med': [_anchor_L]})
+        print(f"    厂用电锚点 L_median = {_anchor_L:.3f} MW（用于约束 L̂(0)≈0）")
+
+        # 发电工况等频分位数箱（15箱，FAN_SUM>0 的纯发电记录）→ 箱中位数拟合
+        _gen = _normal[(_normal['_P'] > 0) & (_normal[fan_col] > 0)].copy()
+        _gen['_bin'] = pd.qcut(_gen['_P'], q=_N_BINS, duplicates='drop')
+        _bins_gen = _gen.groupby('_bin', observed=True).agg(
             P_med=('_P', 'median'), L_med=('_L', 'median'), n=('_P', 'count')
         ).reset_index()
+        # 合并锚点与发电箱中位数
+        _bins = pd.concat([_anchor_bin, _bins_gen[['P_med', 'L_med']]], ignore_index=True)
 
-        # 二次多项式拟合
+        # 二次多项式拟合（含截距，但被锚点约束在低值）
         _coeffs = np.polyfit(_bins['P_med'], _bins['L_med'], deg=2)
         loss_models[line] = _coeffs
 
-        # 拟合质量
-        _L_hat_bins = np.polyval(_coeffs, _bins['P_med'])
-        _r2_bins = (1 - (((_bins['L_med'] - _L_hat_bins) ** 2).sum()
-                         / ((_bins['L_med'] - _bins['L_med'].mean()) ** 2).sum()))
-        _sigma = (_normal['_L'] - np.polyval(_coeffs, _normal['_P'])).std()
+        # 拟合质量（R² 对发电箱，σ 对 P>2MW 的发电记录）
+        _L_hat_bins = np.polyval(_coeffs, _bins_gen['P_med'])
+        _r2_bins = (1 - (((_bins_gen['L_med'] - _L_hat_bins) ** 2).sum()
+                         / ((_bins_gen['L_med'] - _bins_gen['L_med'].mean()) ** 2).sum()))
+        _gen2 = _gen[_gen['_P'] > 2]
+        _sigma = (_gen2['_L'] - np.polyval(_coeffs, _gen2['_P'])).std()
         sign_b = '+' if _coeffs[1] >= 0 else '-'
         sign_c = '+' if _coeffs[2] >= 0 else '-'
-        print(f"    拟合结果：L̂(CT) = {_coeffs[0]:.3e}·CT² {sign_b} {abs(_coeffs[1]):.5f}·CT "
-              f"{sign_c} {abs(_coeffs[2]):.4f}")
-        print(f"    R²(箱中位数) = {_r2_bins:.4f}   σ(原始数据) = {_sigma:.4f} MW   "
-              f"拟合点数 = {len(_normal):,}")
+        print(f"    拟合结果：L̂(P_eff) = {_coeffs[0]:.3e}·P² {sign_b} {abs(_coeffs[1]):.5f}·P "
+              f"{sign_c} {abs(_coeffs[2]):.4f}    L̂(0) = {_coeffs[2]:.3f} MW")
+        print(f"    R²(发电箱中位数) = {_r2_bins:.4f}   σ(P>2MW 发电数据) = {_sigma:.4f} MW")
 
     # ── 生成 fan_repeat_six_types.csv ──────────────────────────────────────
     print("\n  生成 fan_repeat_six_types.csv ...")
@@ -884,16 +909,20 @@ if scada is not None:
     fan_df['CT均值MW']      = _avgs['_ct']
     fan_df['FAN_SUM均值MW'] = _avgs['_fan']
 
-    # 实际线损均值
-    fan_df['实际损耗均值MW'] = fan_df['FAN_SUM均值MW'] - fan_df['CT均值MW']
+    # 实际线损均值（L = FAN_SUM − max(CT, 0)，CT<0 时按 0 处理）
+    fan_df['CT有效均值MW']  = fan_df['CT均值MW'].clip(lower=0)   # P_eff = max(CT, 0)
+    fan_df['实际损耗均值MW'] = fan_df['FAN_SUM均值MW'] - fan_df['CT有效均值MW']
 
-    # 预期线损（使用 CT-based 模型）
+    # 预期线损（使用 P_eff = max(CT, 0) 代入 CT-based 模型）
     def _expected_loss(row):
         line  = row['line']
         ct_v  = row['CT均值MW']
-        if line not in loss_models or np.isnan(ct_v) or ct_v <= 2:
+        if line not in loss_models or np.isnan(ct_v):
             return np.nan
-        return float(np.polyval(loss_models[line], ct_v))
+        p_eff = max(ct_v, 0.0)   # P_eff = max(CT, 0)
+        if p_eff <= 2:
+            return np.nan
+        return float(np.polyval(loss_models[line], p_eff))
 
     fan_df['预期损耗均值MW'] = fan_df.apply(_expected_loss, axis=1)
     fan_df['超额损耗均值MW'] = fan_df['实际损耗均值MW'] - fan_df['预期损耗均值MW']
@@ -905,7 +934,7 @@ if scada is not None:
         '风机编号', 'mfr', 'line', '开始时间', '结束时间', '持续长度',
         'status', 'active_power', 'windspeed', 'mass_fan_count',
         'six_type',
-        'CT均值MW', 'FAN_SUM均值MW', '实际损耗均值MW', '预期损耗均值MW',
+        'CT均值MW', 'CT有效均值MW', 'FAN_SUM均值MW', '实际损耗均值MW', '预期损耗均值MW',
         '超额损耗均值MW', '超额损耗总量MWmin', '超额损耗总量MWh',
     ]].copy()
     _out.rename(columns={
