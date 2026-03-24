@@ -644,14 +644,14 @@ if _scada_parts:
     win = scada[(scada['timestamp'] >= t_win_s) & (scada['timestamp'] <= t_win_e)].copy()
 
     LINE_PAIRS_30 = [
-        ('BING', 'BING_ACTIVE_POWER_SUM_S1', 'ACTIVE_POWER_BING', '#ff7f0e'),
-        ('DING', 'DING_ACTIVE_POWER_SUM_S1', 'ACTIVE_POWER_DING', '#2ca02c'),
-        ('WU',   'WU_ACTIVE_POWER_SUM_S1',   'ACTIVE_POWER_WU',   '#1f77b4'),
+        ('BING', 'BING_ACTIVE_POWER_SUM_S2', 'ACTIVE_POWER_BING', '#ff7f0e'),
+        ('DING', 'DING_ACTIVE_POWER_SUM_S2', 'ACTIVE_POWER_DING', '#2ca02c'),
+        ('WU',   'WU_ACTIVE_POWER_SUM_S2',   'ACTIVE_POWER_WU',   '#1f77b4'),
     ]
     fig, axes30 = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
     for (lname, fan_col, line_col, c_fan), ax in zip(LINE_PAIRS_30, axes30):
         ax.plot(win['timestamp'], win[fan_col],
-                color=c_fan, lw=1.6, label=f'{lname} 风机汇总 S1（SCADA 可能冻结）')
+                color=c_fan, lw=1.6, label=f'{lname} 风机汇总 S2（正值保留，负值取0）')
         ax.plot(win['timestamp'], win[line_col],
                 color='gray', lw=1.3, ls='--', alpha=0.9,
                 label=f'{lname} 集电线路 CT 测点（独立采集）')
@@ -674,7 +674,7 @@ if _scada_parts:
         ax.legend(fontsize=7.5, loc='upper left', ncol=2)
         ax.grid(True, alpha=0.2)
         ax.set_title(
-            f'{lname} 线路：Fan_sum_S1 vs 集电线路 CT（红色阴影 = Fan SCADA 冻结期）',
+            f'{lname} 线路：Fan_sum_S2 vs 集电线路 CT（红色阴影 = Fan SCADA 冻结期）',
             fontsize=9
         )
     plt.suptitle(
@@ -717,7 +717,7 @@ if _scada_parts:
                    label=f'正常均值 {normal_d.mean():.1f} MW')
         ax.axvline(anomaly_d.mean(), color='#d62728',   ls='--', lw=1.8,
                    label=f'异常均值 {anomaly_d.mean():.1f} MW')
-        ax.set_xlabel('Fan_sum_S1 − Line (MW)', fontsize=9)
+        ax.set_xlabel('Fan_sum_S2 − Line (MW)', fontsize=9)
         ax.set_ylabel('密度', fontsize=9)
         ax.set_title(
             f'{lname} 线路：Fan−Line 差值分布\n'
@@ -729,8 +729,8 @@ if _scada_parts:
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.2)
     plt.suptitle(
-        '正常时段 vs 第一类异常时段：Fan_sum_S1 − 集电线路测点 差值分布对比\n'
-        '（仅限发电工况：Fan_S1 > 0 且 Line > 0）\n'
+        '正常时段 vs 第一类异常时段：Fan_sum_S2 − 集电线路测点 差值分布对比\n'
+        '（仅限发电工况：Fan_S2 > 0 且 Line > 0）\n'
         '差值在异常期间均值偏移 → 主因：Line CT 提前恢复，Fan SCADA 仍冻结',
         fontsize=10, y=1.04
     )
@@ -748,30 +748,36 @@ else:
 # ══════════════════════════════════════════════════════════════
 # 动态传输损耗模型拟合（P = max(CT,0)，集电线路有效功率）及 fan_repeat_six_types.csv 生成
 #
-# 物理说明：
-#   实际线损 L = FAN_SUM − max(CT, 0)
-#   集电线路 CT 数据由独立互感器采集，精度高，是拟合的可靠自变量。
-#   FAN_SUM 是风机 SCADA 读数求和，因冻结/零值等异常导致数据质量较差，
-#   不宜作为拟合 P；改用 max(CT, 0) 作为 P_eff。
+# 数据口径说明：
+#   FAN_SUM = *_ACTIVE_POWER_SUM_S2：集电线路所属风机有功功率之和，
+#     各风机功率已进行截断处理（正值保留，负值取 0），故 FAN_SUM_S2 ≥ 0。
+#     _S1 为原始汇总（允许负值），_S2 为截负处理后的汇总，
+#     物理上代表集电线路从风机侧获得的净有效出力。
 #
-#   当 CT < 0 时，表示厂用电通过集电线路向风机供电（反向潮流），
-#   此时集电线路对外输出功率为 0，应按 P_eff = max(CT, 0) = 0 处理，
-#   传输损耗为 0。这些厂用电时段作为 P=0 锚点纳入拟合，
-#   将多项式截距约束在低值（此时 FAN_SUM 亦≈0，故 L≈0）。
+#   CT = ACTIVE_POWER_* 经 max(·, 0) 截断后的集电线路有功：
+#     CT < 0 表示厂用电通过集电线路向风机供电（反向潮流），
+#     此时线路净输出为 0，应按 P_eff = max(CT, 0) = 0 处理；
+#     CT ≥ 0 时，P_eff = CT。
+#
+#   实际线损 L = FAN_SUM_S2 − max(CT, 0)
+#     两侧均已截断为非负值，L 在发电工况下代表风机汇总出力与集电线路净送出功率的差值，
+#     物理上等于电缆铜损 + 箱变铁损 + 明阳风机内部自耗电（SCADA 测量口径包含自耗）。
 #
 # 拟合流程：
 #   1. 对每条集电线路独立排除该线路自身所有重复时段（A~E + Normal）
-#   2. 排除真正停电时段（CT 和 FAN_SUM 同时接近 0）
-#   3. 计算 P_eff = max(CT, 0)，L = FAN_SUM − P_eff
-#   4. 厂用电工况（CT≤0）：P=0，L≈0，作为锚点
-#      发电工况（CT>0 且 FAN_SUM>0）：按 P_eff 分 15 等频分位箱
+#   2. 排除真正停电时段（CT 和 FAN_SUM_S2 同时接近 0）
+#   3. 计算 P_eff = max(CT, 0)，L = FAN_SUM_S2 − P_eff
+#   4. 厂用电工况（CT≤0）：P=0，FAN_SUM_S2=0，L=0，作为 P=0 锚点
+#      发电工况（CT>0 且 FAN_SUM_S2>0）：按 P_eff 分 15 等频分位箱
 #   5. 将锚点与 15 个发电箱中位数合并，拟合二次多项式：L̂ = a·P² + b·P + c
-#      （c 被 P=0 锚点约束为低值，实现 L̂(0) ≈ 0）
+#      （截距 c 被 P=0 锚点自然约束在接近 0 处）
 # ══════════════════════════════════════════════════════════════
 
 # 集电线路列映射
+# FAN_SUM 使用 _S2（各风机功率正值保留、负值取 0 后的汇总）
+# CT 使用 ACTIVE_POWER_*，在计算 P_eff 时进行 max(·, 0) 截断
 _LINE_CT_COL  = {'BING': 'ACTIVE_POWER_BING',      'DING': 'ACTIVE_POWER_DING',      'WU': 'ACTIVE_POWER_WU'}
-_LINE_FAN_COL = {'BING': 'BING_ACTIVE_POWER_SUM_S1','DING': 'DING_ACTIVE_POWER_SUM_S1','WU': 'WU_ACTIVE_POWER_SUM_S1'}
+_LINE_FAN_COL = {'BING': 'BING_ACTIVE_POWER_SUM_S2','DING': 'DING_ACTIVE_POWER_SUM_S2','WU': 'WU_ACTIVE_POWER_SUM_S2'}
 _LINE_NAME_ZH = {'BING': '丙（BING）', 'DING': '丁（DING）', 'WU': '戊（WU）'}
 _N_BINS = 15
 
