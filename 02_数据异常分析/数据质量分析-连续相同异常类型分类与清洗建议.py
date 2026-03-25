@@ -746,7 +746,8 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════
-# 动态传输损耗模型拟合（P = FAN_SUM_S2，过原点）及 fan_repeat_six_types.csv 生成
+# 动态传输损耗模型拟合（方案 B：P = FAN_SUM_S2，含截距，稳定运行区筛选）
+# 及 fan_repeat_six_types.csv 生成
 #
 # 数据口径说明：
 #   FAN_SUM = *_ACTIVE_POWER_SUM_S2：集电线路所属风机有功功率之和，
@@ -762,14 +763,17 @@ else:
 #   模型目标：CT_pred = FAN_SUM_S2 − L̂(FAN_SUM_S2)
 #     用于功率预测：已知风机功率和 FAN_SUM_S2，预测集电线路功率 CT。
 #
-# 拟合流程：
+# 方案 B 拟合流程：
 #   1. 对每条集电线路独立排除该线路自身所有重复时段（A~E + Normal）
 #   2. 排除真正停电时段（CT 和 FAN_SUM_S2 同时接近 0）
 #   3. 自变量 P = FAN_SUM_S2（已 ≥ 0），因变量 L = FAN_SUM_S2 − max(CT, 0)
-#   4. 发电工况（P > 0）：按 P 分 15 等频分位箱，取各箱中位数 (P_med, L_med)
-#   5. 过原点二次拟合（无截距，强制 L̂(0) = 0）：
-#        L̂(P) = a·P² + b·P  （使用 lstsq，不含常数项）
-#      物理依据：当 FAN_SUM_S2 = 0 时，无电流流过集电线路，损耗自然为 0。
+#   4. 稳定运行区筛选（阈值以上）：只保留 FAN_SUM_S2 > 线路阈值 的样本参与拟合
+#      原因：低功率区 FAN_SUM_S2 已有读数，但 max(CT,0) 尚未稳定建立（CT ≈ 0），
+#      混入这些样本会拉低 R²，降低高功率区的拟合精度。
+#   5. 对筛选后样本按 P 分 15 等频分位箱，取各箱中位数 (P_med, L_med)
+#   6. 含截距二次拟合（np.polyfit）：L̂(P) = a·P² + b·P + c
+#      截距 c 捕获变压器磁化损耗（铁损）等接近固定的基础损耗项。
+#      模型与 CT_pred = FAN_SUM_S2 − L̂(FAN_SUM_S2) 配合使用。
 # ══════════════════════════════════════════════════════════════
 
 # 集电线路列映射
@@ -780,6 +784,10 @@ _LINE_FAN_COL = {'BING': 'BING_ACTIVE_POWER_SUM_S2','DING': 'DING_ACTIVE_POWER_S
 _LINE_NAME_ZH = {'BING': '丙（BING）', 'DING': '丁（DING）', 'WU': '戊（WU）'}
 _N_BINS = 15
 
+# 方案 B 各集电线路的稳定运行区阈值（FAN_SUM_S2，单位 MW）
+# 低于阈值的样本只展示、不参与拟合
+_LINE_FAN_THRESHOLD_B = {'BING': 3.5, 'DING': 3.0, 'WU': 4.0}
+
 # 六类分类 → 集电线路映射（用于排除各线路自身异常时段）
 # fan_df 的 'line' 列已由前面步骤生成
 ANOM_SIX_TYPES = ['第一类-全场通讯中断', '第二类-部分通讯中断',
@@ -787,16 +795,17 @@ ANOM_SIX_TYPES = ['第一类-全场通讯中断', '第二类-部分通讯中断'
                    '第三类-单机非零卡值', '正常停机-保留', '零值-状态待核实']
 # 以上涵盖全部七种原始异常类型（含 Normal 对应的"正常停机-保留"及"零值-状态待核实"）
 
-loss_models = {}   # line → numpy polynomial coefficients [a, b, 0] (polyval-compatible)
+loss_models = {}   # line → numpy polynomial coefficients [a, b, c] (polyval-compatible)
 
 if scada is not None:
     print("\n" + "=" * 70)
-    print("  拟合动态传输损耗模型（P = FAN_SUM_S2，过原点：L̂ = a·P² + b·P）")
+    print("  拟合动态传输损耗模型（方案B：P = FAN_SUM_S2，含截距：L̂ = a·P² + b·P + c）")
     print("=" * 70)
 
     for line in ['BING', 'DING', 'WU']:
         ct_col  = _LINE_CT_COL[line]
         fan_col = _LINE_FAN_COL[line]
+        fan_threshold = _LINE_FAN_THRESHOLD_B[line]
 
         # 本线路全部异常段（所有七种类型合并）
         anom_segs = (fan_df[fan_df['line'] == line][['开始时间', '结束时间']]
@@ -819,31 +828,36 @@ if scada is not None:
         _normal['_P'] = _normal[fan_col].clip(lower=0)    # P = FAN_SUM_S2
         _normal['_L'] = _normal[fan_col] - _normal[ct_col].clip(lower=0)  # L = FAN_SUM − max(CT,0)
         n_gen = (_normal['_P'] > 0).sum()
-        print(f"    数据量：{len(_normal):,} 条（发电工况 {n_gen:,}）")
+        print(f"    数据量（全部正常时段）：{len(_normal):,} 条（发电工况 {n_gen:,}）")
 
-        # 发电工况等频分位数箱（15箱，P > 0）→ 箱中位数拟合
-        _gen = _normal[_normal['_P'] > 0].copy()
-        _gen['_bin'] = pd.qcut(_gen['_P'], q=_N_BINS, duplicates='drop')
-        _bins_gen = _gen.groupby('_bin', observed=True).agg(
+        # 方案 B：只使用稳定运行区（FAN_SUM_S2 > 阈值）的样本参与拟合
+        _gen_fit = _normal[_normal['_P'] > fan_threshold].copy()
+        n_filtered = len(_normal[_normal['_P'] > 0]) - len(_gen_fit)
+        print(f"    阈值筛选（FAN_SUM_S2 > {fan_threshold} MW）：参与拟合 {len(_gen_fit):,} 条，"
+              f"排除低功率样本 {n_filtered:,} 条")
+
+        # 等频分位数箱（15箱）→ 箱中位数拟合
+        _gen_fit['_bin'] = pd.qcut(_gen_fit['_P'], q=_N_BINS, duplicates='drop')
+        _bins_gen = _gen_fit.groupby('_bin', observed=True).agg(
             P_med=('_P', 'median'), L_med=('_L', 'median'), n=('_P', 'count')
         ).reset_index()
 
-        # 过原点二次拟合：L̂ = a·P² + b·P（无截距，使用 lstsq）
-        _X = np.column_stack([_bins_gen['P_med'].values ** 2, _bins_gen['P_med'].values])
-        _ab, _, _, _ = np.linalg.lstsq(_X, _bins_gen['L_med'].values, rcond=None)
-        # 以 [a, b, 0] 存储，兼容 np.polyval(coeffs, P) 调用
-        _coeffs = np.array([_ab[0], _ab[1], 0.0])
-        loss_models[line] = _coeffs
+        # 含截距二次拟合（np.polyfit）：L̂(P) = a·P² + b·P + c
+        _coeffs = np.polyfit(_bins_gen['P_med'].values, _bins_gen['L_med'].values, deg=2)
+        loss_models[line] = _coeffs   # [a, b, c]，与 np.polyval 兼容
 
-        # 拟合质量（R² 对发电箱，σ 对 P>2MW 的发电记录）
-        _L_hat_bins = _X @ _ab
-        _r2_bins = (1 - (((_bins_gen['L_med'].values - _L_hat_bins) ** 2).sum()
-                         / ((_bins_gen['L_med'].values - _bins_gen['L_med'].mean()) ** 2).sum()))
-        _gen2 = _gen[_gen['_P'] > 2]
-        _sigma = (_gen2['_L'] - np.polyval(_coeffs, _gen2['_P'])).std()
-        sign_b = '+' if _coeffs[1] >= 0 else '-'
-        print(f"    拟合结果（过原点）：L̂(P) = {_coeffs[0]:.4e}·P² {sign_b} {abs(_coeffs[1]):.5f}·P  [L̂(0)=0]")
-        print(f"    R²(发电箱中位数) = {_r2_bins:.4f}   σ(P>2MW 发电数据) = {_sigma:.4f} MW")
+        # 拟合质量（R² 对发电箱，σ 对 P > 稳定阈值 的正常数据）
+        _L_hat_bins = np.polyval(_coeffs, _bins_gen['P_med'].values)
+        _ss_res = ((_bins_gen['L_med'].values - _L_hat_bins) ** 2).sum()
+        _ss_tot = ((_bins_gen['L_med'].values - _bins_gen['L_med'].mean()) ** 2).sum()
+        _r2_bins = (1 - _ss_res / _ss_tot) if _ss_tot > 0 else float('nan')
+        _gen2 = _gen_fit[_gen_fit['_P'] > max(2, fan_threshold)]
+        _sigma = (_gen2['_L'] - np.polyval(_coeffs, _gen2['_P'])).std() if len(_gen2) > 0 else float('nan')
+        a, b, c = _coeffs
+        sign_b = '+' if b >= 0 else '-'
+        sign_c = '+' if c >= 0 else '-'
+        print(f"    拟合结果（含截距）：L̂(P) = {a:.4e}·P² {sign_b} {abs(b):.5f}·P {sign_c} {abs(c):.4f}")
+        print(f"    R²(发电箱中位数) = {_r2_bins:.4f}   σ(P>{fan_threshold}MW 发电数据) = {_sigma:.4f} MW")
 
     # ── 生成 fan_repeat_six_types.csv ──────────────────────────────────────
     print("\n  生成 fan_repeat_six_types.csv ...")
@@ -907,13 +921,14 @@ if scada is not None:
     fan_df['CT有效均值MW']  = fan_df['CT均值MW'].clip(lower=0)   # P_eff = max(CT, 0)
     fan_df['实际损耗均值MW'] = fan_df['FAN_SUM均值MW'] - fan_df['CT有效均值MW']
 
-    # 预期线损（使用 P = FAN_SUM_S2 代入过原点模型 L̂(P) = a·P² + b·P）
+    # 预期线损（方案B：P = FAN_SUM_S2，含截距模型 L̂(P) = a·P² + b·P + c）
     def _expected_loss(row):
         line   = row['line']
         fan_v  = row['FAN_SUM均值MW']   # P = FAN_SUM_S2（自变量）
         if line not in loss_models or np.isnan(fan_v):
             return np.nan
-        p = max(fan_v, 0.0)   # P = FAN_SUM_S2（已 ≥ 0）
+        p = max(fan_v, 0.0)
+        # 预测阈值：稳定运行区（低于拟合阈值时预测值可信度下降，保留但标注）
         if p <= 2:
             return np.nan
         return float(np.polyval(loss_models[line], p))

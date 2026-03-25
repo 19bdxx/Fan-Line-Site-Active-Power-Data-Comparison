@@ -75,7 +75,8 @@ else:
     matplotlib.rcParams["axes.unicode_minus"] = False
     print("⚠️ 未找到中文字体，Matplotlib 中文可能显示为方块。")
 
-_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.join(_SCRIPT_DIR, "..")          # 项目根目录（02_数据异常分析的上一级）
 SCADA_DIR = os.path.join(_ROOT_DIR, "DATA", "峡阳B")
 OUT_FIG_DIR = os.path.join(_ROOT_DIR, "DATA", "峡阳B", "analysis_output")
 OUT_DATA_DIR = os.path.join(_ROOT_DIR, "分析结果", "数据质量分析", "峡阳B")
@@ -249,7 +250,9 @@ def load_scada() -> pd.DataFrame:
 def load_anomaly_segments() -> pd.DataFrame:
     print("\n  加载异常段分类结果 ...")
     classified_csv = os.path.join(OUT_DATA_DIR, "fan_repeat_classified.csv")
-    raw_excel = os.path.join(_ROOT_DIR, "联合重复值检测结果.xlsx")
+    raw_excel = os.path.join(
+        _ROOT_DIR, "分析结果", "风机重复检测", "峡阳B", "联合重复值检测结果.xlsx"
+    )
 
     if os.path.exists(classified_csv):
         anom_df = pd.read_csv(classified_csv, encoding="utf-8-sig")
@@ -660,8 +663,7 @@ def main():
     save_comparison_csv(results)
     save_static_png(results)
 
-    # if args.dash:
-    if 1:
+    if args.dash:
         print("\n" + "=" * 65)
         print("  启动 Dash 服务")
         print("=" * 65)
