@@ -234,25 +234,25 @@ FILES = [
     (
         "峡沙",
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7补齐时间戳\峡沙\#7峡沙_20240315-20241224.csv",
-        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "ACTIVE_POWER_STATION", "LIMIT_POWER"],
+        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "LIMIT_POWER"],
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7-1提取场站集电线路-全站有功\峡沙\#7-1峡沙_20240315-20241224.csv",
     ),
     (
         "峡阳A",
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7补齐时间戳\峡阳A\#7峡阳A_20240315-20241224.csv",
-        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "ACTIVE_POWER_STATION", "LIMIT_POWER"],
+        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "LIMIT_POWER"],
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7-1提取场站集电线路-全站有功\峡阳A\#7-1峡阳A_20240315-20241224.csv",
     ),
     (
         "峡阳B",
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7补齐时间戳\峡阳B\#7峡阳B_20240315-20241224.csv",
-        ["timestamp", "ACTIVE_POWER_BING", "ACTIVE_POWER_DING", "ACTIVE_POWER_WU", "ACTIVE_POWER_STATION", "LIMIT_POWER"],
+        ["timestamp", "ACTIVE_POWER_BING", "ACTIVE_POWER_DING", "ACTIVE_POWER_WU", "LIMIT_POWER"],
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7-1提取场站集电线路-全站有功\峡阳B\#7-1峡阳B_20240315-20241224.csv",
     ),
     (
         "蕴阳",
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7补齐时间戳\蕴阳\#7蕴阳_20240315-20241224.csv",
-        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "ACTIVE_POWER_STATION", "LIMIT_POWER"],
+        ["timestamp", "ACTIVE_POWER_JIA", "ACTIVE_POWER_YI", "LIMIT_POWER"],
         r"G:\WindPowerForecast\#1场站数据下载\代码-从日志提取\广东\code_下载\#7-1提取场站集电线路-全站有功\蕴阳\#7-1蕴阳_20240315-20241224.csv",
     ),
     (
